@@ -1,0 +1,13 @@
+# Sample config — actual values are loaded from environment variables (see .env.example).
+# This file is informational; the service reads only env vars at startup.
+log_level: info
+http_addr: ":8080"
+postgres_dsn: "postgres://notif:notif@localhost:5432/notif?sslmode=disable"
+redis_addr: "localhost:6379"
+rabbitmq_url: "amqp://notif:notif@localhost:5672/"
+provider_mode: mock # or "real"
+rate_limit:
+  push_per_hour: 20
+  sms_per_hour: 5
+  email_per_hour: 10
+max_retries: 5

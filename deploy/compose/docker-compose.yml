@@ -1,0 +1,171 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: notif
+      POSTGRES_PASSWORD: notif
+      POSTGRES_DB: notif
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notif -d notif"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: notif
+      RABBITMQ_DEFAULT_PASS: notif
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.migrate
+    environment:
+      POSTGRES_DSN: postgres://notif:notif@postgres:5432/notif?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.api
+    env_file: ../../.env.example
+    environment:
+      POSTGRES_DSN: postgres://notif:notif@postgres:5432/notif?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://notif:notif@rabbitmq:5672/
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  worker-push-ios:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.worker
+    env_file: ../../.env.example
+    environment:
+      POSTGRES_DSN: postgres://notif:notif@postgres:5432/notif?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://notif:notif@rabbitmq:5672/
+      WORKER_CHANNEL: push_ios
+    depends_on:
+      api:
+        condition: service_started
+
+  worker-push-android:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.worker
+    env_file: ../../.env.example
+    environment:
+      POSTGRES_DSN: postgres://notif:notif@postgres:5432/notif?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://notif:notif@rabbitmq:5672/
+      WORKER_CHANNEL: push_android
+    depends_on:
+      api:
+        condition: service_started
+
+  worker-sms:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.worker
+    env_file: ../../.env.example
+    environment:
+      POSTGRES_DSN: postgres://notif:notif@postgres:5432/notif?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://notif:notif@rabbitmq:5672/
+      WORKER_CHANNEL: sms
+    depends_on:
+      api:
+        condition: service_started
+
+  worker-email:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.worker
+    env_file: ../../.env.example
+    environment:
+      POSTGRES_DSN: postgres://notif:notif@postgres:5432/notif?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://notif:notif@rabbitmq:5672/
+      WORKER_CHANNEL: email
+    depends_on:
+      api:
+        condition: service_started
+
+  janitor:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.janitor
+    env_file: ../../.env.example
+    environment:
+      POSTGRES_DSN: postgres://notif:notif@postgres:5432/notif?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://notif:notif@rabbitmq:5672/
+      JANITOR_INTERVAL: 30s
+      JANITOR_STUCK_THRESHOLD: 5m
+    depends_on:
+      api:
+        condition: service_started
+
+  outbox-relay:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.outbox-relay
+    env_file: ../../.env.example
+    environment:
+      POSTGRES_DSN: postgres://notif:notif@postgres:5432/notif?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://notif:notif@rabbitmq:5672/
+      RELAY_INTERVAL: 500ms
+      RELAY_BATCH_SIZE: 100
+    depends_on:
+      api:
+        condition: service_started
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=24h
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9091:9090"
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  pgdata:

@@ -1,0 +1,16 @@
+/bin/
+/dist/
+/tmp/
+/.env
+/.env.local
+*.test
+*.out
+coverage.out
+.idea/
+.vscode/
+.DS_Store
+
+# Local-only files (Claude harness state, source-of-truth PDF, internal notes)
+.claude/
+Notification_System.pdf
+CLAUDE_CONTEXT.md
