@@ -1,7 +1,7 @@
 // notification-api: composition root for the API service.
 //
-// All cross-package wiring lives here. Other packages — domain, app/usecase,
-// adapter/* — never import from cmd/, so this is the only place a concrete
+// All cross-package wiring lives here. Other packages — domain, service,
+// infrastructure/* — never import from cmd/, so this is the only place a concrete
 // adapter is bound to a port.
 package main
 
@@ -15,18 +15,19 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/example/notification-engine/internal/adapter/inbound/httpapi"
-	obsadapter "github.com/example/notification-engine/internal/adapter/outbound/observability"
-	"github.com/example/notification-engine/internal/adapter/outbound/postgres"
-	"github.com/example/notification-engine/internal/adapter/outbound/rabbitmq"
-	redisadapter "github.com/example/notification-engine/internal/adapter/outbound/redis"
-	"github.com/example/notification-engine/internal/adapter/outbound/rendering"
-	"github.com/example/notification-engine/internal/app/port"
-	"github.com/example/notification-engine/internal/app/usecase"
+	httpapi "github.com/example/notification-engine/cmd/api/http"
+	"github.com/example/notification-engine/cmd/api/http/handlers"
+	"github.com/example/notification-engine/infrastructure/postgres"
+	"github.com/example/notification-engine/infrastructure/rabbitmq"
+	"github.com/example/notification-engine/infrastructure/rendering"
+	redisinfra "github.com/example/notification-engine/infrastructure/redis"
 	"github.com/example/notification-engine/internal/domain"
 	"github.com/example/notification-engine/internal/platform/auth"
 	"github.com/example/notification-engine/internal/platform/config"
-	"github.com/example/notification-engine/internal/platform/observability"
+	"github.com/example/notification-engine/internal/port"
+	"github.com/example/notification-engine/internal/service"
+	"github.com/example/notification-engine/observability/logger"
+	"github.com/example/notification-engine/observability/metrics"
 )
 
 func main() {
@@ -41,7 +42,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	log := observability.NewLogger(cfg.LogLevel)
+	log := logger.NewLogger(cfg.LogLevel)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -53,7 +54,7 @@ func run() error {
 	}
 	defer pool.Close()
 
-	rdb, err := redisadapter.Connect(ctx, cfg.RedisAddr, cfg.RedisDB)
+	rdb, err := redisinfra.Connect(ctx, cfg.RedisAddr, cfg.RedisDB)
 	if err != nil {
 		return fmt.Errorf("redis: %w", err)
 	}
@@ -72,14 +73,14 @@ func run() error {
 	templatesRepo := postgres.NewTemplateRepository(pool)
 	usersRepo := postgres.NewUserRepository(pool)
 	publisher := rabbitmq.NewPublisher(mq)
-	limiter := redisadapter.NewRateLimiter(rdb)
-	deduper := redisadapter.NewDeduper(rdb)
+	limiter := redisinfra.NewRateLimiter(rdb)
+	deduper := redisinfra.NewDeduper(rdb)
 	renderer := rendering.New(templatesRepo)
-	metrics := obsadapter.NewPrometheusMetrics()
+	m := metrics.NewPrometheusMetrics()
 
-	// --- use cases ---
+	// --- services ---
 	clock := port.RealClock{}
-	submit := &usecase.SubmitNotification{
+	submit := &service.SubmitNotification{
 		Notifications: notificationsRepo,
 		Users:         usersRepo,
 		Templates:     templatesRepo,
@@ -87,35 +88,35 @@ func run() error {
 		Publisher:     publisher,
 		Limiter:       limiter,
 		Deduper:       deduper,
-		Metrics:       metrics,
+		Metrics:       m,
 		Clock:         clock,
 		Log:           log,
-		Cfg: usecase.SubmitNotificationConfig{
+		Cfg: service.SubmitNotificationConfig{
 			DedupeTTL:       cfg.DedupeTTL,
 			RateLimits:      cfg.RateLimit.AsMap(),
 			RateLimitWindow: cfg.RateLimitWindow,
 		},
 	}
-	get := &usecase.GetNotification{Notifications: notificationsRepo}
-	createTemplate := &usecase.CreateTemplate{Templates: templatesRepo, Clock: clock}
-	getTemplate := &usecase.GetTemplate{Templates: templatesRepo}
-	updateSetting := &usecase.UpdateSetting{Users: usersRepo, Clock: clock}
-	registerDevice := &usecase.RegisterDevice{Users: usersRepo, Clock: clock}
+	get := &service.GetNotification{Notifications: notificationsRepo}
+	createTemplate := &service.CreateTemplate{Templates: templatesRepo, Clock: clock}
+	getTemplate := &service.GetTemplate{Templates: templatesRepo}
+	updateSetting := &service.UpdateSetting{Users: usersRepo, Clock: clock}
+	registerDevice := &service.RegisterDevice{Users: usersRepo, Clock: clock}
 
 	// --- inbound adapter ---
-	handler := &httpapi.Handler{
-		Submit:         submit,
-		Get:            get,
-		CreateTemplate: createTemplate,
-		GetTemplate:    getTemplate,
-		UpdateSetting:  updateSetting,
-		RegisterDevice: registerDevice,
+	h := &handlers.Handler{
+		SubmitSvc:         submit,
+		GetSvc:            get,
+		CreateTemplateSvc: createTemplate,
+		GetTemplateSvc:    getTemplate,
+		UpdateSettingSvc:  updateSetting,
+		RegisterDeviceSvc: registerDevice,
 	}
 	verifier := auth.NewVerifier(cfg.AppClients, cfg.HMACSkew)
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
-		Handler: httpapi.NewRouter(handler, verifier, limiter, log, httpapi.RouterConfig{
+		Handler: httpapi.NewRouter(h, verifier, limiter, log, httpapi.RouterConfig{
 			AppKeyRateLimit:  cfg.AppKeyRateLimit,
 			AppKeyRateWindow: cfg.AppKeyRateWindow,
 		}),

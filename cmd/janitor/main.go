@@ -12,13 +12,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/example/notification-engine/internal/adapter/outbound/postgres"
-	"github.com/example/notification-engine/internal/adapter/outbound/rabbitmq"
-	"github.com/example/notification-engine/internal/app/port"
-	"github.com/example/notification-engine/internal/app/usecase"
+	"github.com/example/notification-engine/infrastructure/postgres"
+	"github.com/example/notification-engine/infrastructure/rabbitmq"
+	"github.com/example/notification-engine/internal/port"
+	"github.com/example/notification-engine/internal/service"
 	"github.com/example/notification-engine/internal/domain"
 	"github.com/example/notification-engine/internal/platform/config"
-	"github.com/example/notification-engine/internal/platform/observability"
+	"github.com/example/notification-engine/observability/logger"
 )
 
 func main() {
@@ -33,7 +33,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	log := observability.NewLogger(cfg.LogLevel)
+	log := logger.NewLogger(cfg.LogLevel)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -53,12 +53,12 @@ func run() error {
 		return fmt.Errorf("rabbitmq setup: %w", err)
 	}
 
-	uc := &usecase.RescueStuckNotifications{
+	uc := &service.RescueStuckNotifications{
 		Notifications: postgres.NewNotificationRepository(pool),
 		Publisher:     rabbitmq.NewPublisher(mq),
 		Clock:         port.RealClock{},
 		Log:           log,
-		Cfg: usecase.RescueStuckConfig{
+		Cfg: service.RescueStuckConfig{
 			StuckThreshold: cfg.JanitorStuckThreshold,
 			BatchSize:      cfg.JanitorBatchSize,
 		},

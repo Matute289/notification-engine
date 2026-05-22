@@ -70,46 +70,57 @@ choices behind any port (Postgres → MySQL, RabbitMQ → Kafka, Prometheus →
 OTel) can change without touching domain or use cases.
 
 ```
-┌────────────────────── cmd/{api,worker}/main.go ──────────────────────┐
-│              composition root: bind concrete adapters                │
+┌─────────── cmd/{api,worker,janitor,outbox-relay}/main.go ────────────┐
+│               composition root: bind concrete adapters               │
 │                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │            adapter/inbound       adapter/outbound              │  │
-│  │       ┌──────────────────┐    ┌──────────────────────────┐     │  │
-│  │       │ httpapi          │    │ postgres (3 repos)       │     │  │
-│  │       │ worker (AMQP)    │    │ redis (RateLimiter,      │     │  │
-│  │       └────────┬─────────┘    │        Deduper)          │     │  │
-│  │                │              │ rabbitmq (EventPublisher)│     │  │
-│  │                ▼              │ provider/mock            │     │  │
-│  │       ┌──────────────────┐    │ rendering                │     │  │
-│  │       │ app/usecase      │◄───┤ observability (Prometheus)│    │  │
-│  │       │  + app/port      │    └──────────────────────────┘     │  │
-│  │       └────────┬─────────┘                                     │  │
-│  │                ▼                                               │  │
-│  │       ┌──────────────────┐                                     │  │
-│  │       │ domain (entities,│                                     │  │
-│  │       │  state machine,  │                                     │  │
-│  │       │  value objects)  │                                     │  │
-│  │       └──────────────────┘                                     │  │
-│  │                                                                │  │
-│  │  platform/{auth,config,observability}  (cross-cutting infra)   │  │
-│  └────────────────────────────────────────────────────────────────┘  │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  cmd/api/http/{router,handlers/,dto/}   (driving adapter)  │    │
+│  │  cmd/worker/consumer/consumer.go         (driving adapter)  │    │
+│  │  middleware/                             (HTTP middleware)  │    │
+│  └──────────────────────────┬──────────────────────────────────┘    │
+│                             │                                        │
+│  ┌──────────────────────────▼──────────────────────────────────┐    │
+│  │                   internal/service/                         │    │
+│  │       (SubmitNotification, ProcessNotification, …)          │    │
+│  └──────────────────────────┬──────────────────────────────────┘    │
+│                             │ uses                                   │
+│  ┌──────────────────────────▼──────────────────────────────────┐    │
+│  │                   internal/port/                            │    │
+│  │      (interfaces for repos, queue, cache, provider, …)      │    │
+│  └──────────────────────────┬──────────────────────────────────┘    │
+│                             │ implemented by                         │
+│  ┌──────────────────────────▼──────────────────────────────────┐    │
+│  │  infrastructure/{postgres,redis,rabbitmq,rendering,provider} │    │
+│  │  observability/{logger/,metrics/}                           │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │              internal/domain/                               │    │
+│  │   entities · value objects · state machine · errors         │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│  internal/platform/{auth,config}  (cross-cutting infra)             │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-Import direction: **domain ← app ← adapter ← cmd**. Never the other way.
+Import direction: **domain ← port ← service ← {infrastructure, middleware, observability, cmd/.../http, cmd/.../consumer} ← cmd/*/main.go**
+
+Note: `cmd/api/http/` and `cmd/worker/consumer/` are **driving adapters** collocated inside their composition root directory — they are not composition roots themselves.
 
 ### 2.1 Layer responsibilities
 
-| Layer         | Path                                | What lives here                                                                             | Allowed imports                                  |
-| ------------- | ----------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| Domain        | `internal/domain/`                  | Entities, value objects, sentinel errors, state machine                                     | stdlib + `uuid`                                  |
-| Ports         | `internal/app/port/`                | Interfaces describing what use cases need from the outside world                            | `domain`, stdlib                                 |
-| Use cases     | `internal/app/usecase/`             | One struct + `Execute` per use case. All orchestration lives here.                          | `domain`, `app/port`, stdlib                     |
-| Inbound adp.  | `internal/adapter/inbound/...`      | HTTP / AMQP delivery → use case input. No business logic.                                   | `app/usecase`, `domain`, `platform`, third-party |
-| Outbound adp. | `internal/adapter/outbound/...`     | Concrete implementations of ports (Postgres, Redis, RabbitMQ, Prometheus, mock provider).   | `app/port`, `domain`, third-party                |
-| Platform      | `internal/platform/...`             | Cross-cutting infra not behind a port: HMAC verifier, env config loader, slog logger        | stdlib + third-party                             |
-| Composition   | `cmd/{api,worker}/main.go`          | Wire concrete adapters into use cases. **Only place adapters meet ports.**                  | everything                                       |
+| Layer              | Path                                        | What lives here                                                                                        | Allowed imports                                    |
+| ------------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------- |
+| Domain             | `internal/domain/`                          | Entities, value objects, sentinel errors, state machine                                                | stdlib + `uuid`                                    |
+| Ports              | `internal/port/`                            | Interfaces describing what services need from the outside world                                        | `domain`, stdlib                                   |
+| Services           | `internal/service/`                         | One struct + `Execute` per use case. All orchestration lives here.                                     | `domain`, `internal/port`, stdlib                  |
+| HTTP driving adp.  | `cmd/api/http/{handlers/,dto/,router.go}`   | HTTP delivery → service input. No business logic.                                                      | `internal/service`, `internal/port`, `domain`, third-party |
+| AMQP driving adp.  | `cmd/worker/consumer/`                      | AMQP delivery → service input. No business logic.                                                      | `internal/service`, `infrastructure/rabbitmq`, `domain` |
+| Middleware         | `middleware/`                               | HTTP request pipeline (RequestID, Recoverer, AccessLog, HMACAuth, AppKeyRateLimit)                    | `internal/port`, `internal/platform/auth`, third-party |
+| Infrastructure adp.| `infrastructure/{postgres,redis,rabbitmq,rendering,provider}/` | Concrete implementations of ports.                                              | `internal/port`, `domain`, third-party             |
+| Observability      | `observability/{logger/,metrics/}`          | slog logger + Prometheus MetricsRecorder implementation                                                | `internal/port`, stdlib, third-party               |
+| Platform           | `internal/platform/{auth,config}/`          | Cross-cutting infra not behind a port: HMAC verifier, env config loader                               | stdlib + third-party                               |
+| Composition        | `cmd/{api,worker,janitor,outbox-relay}/main.go` | Wire concrete adapters into services. **Only place infrastructure meets ports.**                   | everything                                         |
 
 Each outbound adapter has a compile-time check `var _ port.X = (*Y)(nil)` so a
 drift between port and implementation breaks `go build`, not production.
@@ -224,30 +235,33 @@ message can be re-driven by a janitor; the inverse never happens).
 
 ### 5.1 Inbound
 
-| Module                                | Drives                  | Notes                                                                                                                                                                          |
-| ------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `adapter/inbound/httpapi/`            | `Submit`/`Get`/`Create` | chi router, six routes under `/v1`, plus `/healthz`, `/readyz`, `/metrics` outside the auth-protected sub-router. DTOs in `dto.go` keep the JSON shape decoupled from domain.  |
-| `adapter/inbound/httpapi/middleware/` | n/a                     | RequestID (UUID per request), Recoverer (panic → 500 + stack log), AccessLog (slog + Prometheus histogram), HMACAuth (verifies `X-App-*` headers).                              |
-| `adapter/inbound/worker/`             | `ProcessNotification`   | Bounded-concurrency consumer: `Channel.Qos(prefetch)` → semaphore-limited goroutine pool. On use-case error, `Nack(requeue=true)`; otherwise `Ack`.                            |
+| Module                           | Drives                  | Notes                                                                                                                                                                         |
+| -------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cmd/api/http/handlers/`         | `Submit`/`Get`/`Create` | chi handler methods on `Handler` struct. Fields use `Svc` suffix (e.g. `SubmitSvc`) to avoid collision with exported method names.                                            |
+| `cmd/api/http/dto/`              | n/a                     | One file per exported DTO type. `ToView` helper converts domain `Notification` to `NotificationView`.                                                                         |
+| `cmd/api/http/router.go`         | n/a                     | chi router wiring: `NewRouter(h, verifier, limiter, log, cfg)`. Health and metrics outside auth-protected sub-router.                                                         |
+| `middleware/`                    | n/a                     | RequestID (UUID per request), Recoverer (panic → 500 + stack log), AccessLog (slog + Prometheus histogram), HMACAuth (verifies `X-App-*` headers), AppKeyRateLimit.           |
+| `cmd/worker/consumer/`           | `ProcessNotification`   | Bounded-concurrency consumer: `Channel.Qos(prefetch)` → semaphore-limited goroutine pool. On service error, `Nack(requeue=true)`; otherwise `Ack`.                           |
 
-### 5.2 Outbound
+### 5.2 Infrastructure (outbound)
 
-| Module                                | Implements                                  | Notes                                                                                                                                                                                              |
-| ------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `adapter/outbound/postgres/`          | `Notification/Template/UserRepository`      | pgx pool. Aggregates split per-file; one type per port. JSON columns for `recipient` + `variables`.                                                                                                |
-| `adapter/outbound/redis/`             | `RateLimiter`, `Deduper`                    | Fixed-window counter via `INCR` + `EXPIRE`; dedupe via `SETNX` + TTL.                                                                                                                              |
-| `adapter/outbound/rabbitmq/`          | `EventPublisher`                            | Topology declared by `Setup(channels)` — one work + retry + dead queue per channel; retries use the dead-letter-with-TTL pattern. Wire format uses an explicit `publishedNotification` struct so domain stays stable. |
-| `adapter/outbound/provider/mock/`     | `NotificationProvider`                      | Logs every send; an injected `failureRate` exercises the retry branch in demos.                                                                                                                    |
-| `adapter/outbound/rendering/`         | `TemplateRenderer`                          | Compiles `text/template` (or `html/template` for email auto-escape); per-id in-process cache.                                                                                                       |
-| `adapter/outbound/observability/`     | `MetricsRecorder`                           | Prometheus-backed counter / histogram set. Exposed at `/metrics`. Tests use a no-op fake instead.                                                                                                  |
+| Module                              | Implements                                    | Notes                                                                                                                                                                                              |
+| ----------------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `infrastructure/postgres/`          | `Notification/Template/UserRepository`        | pgx pool. Aggregates split per-file; one type per port. JSON columns for `recipient` + `variables`.                                                                                                |
+| `infrastructure/redis/`             | `RateLimiter`, `Deduper`                      | Token-bucket via Lua script (atomic refill+consume); dedupe via `SETNX` + TTL.                                                                                                                     |
+| `infrastructure/rabbitmq/`          | `EventPublisher`                              | Topology declared by `Setup(channels)` — one work + retry + dead queue per channel; retries use the dead-letter-with-TTL pattern. Wire format uses an explicit `publishedNotification` struct so domain stays stable. |
+| `infrastructure/provider/mock/`     | `NotificationProvider`                        | Logs every send; an injected `failureRate` exercises the retry branch in demos.                                                                                                                    |
+| `infrastructure/provider/{apns,fcm,twilio,sendgrid}/` | `NotificationProvider`        | Real provider skeletons with full request/response shape and transient/terminal error mapping.                                                                                                     |
+| `infrastructure/rendering/`         | `TemplateRenderer`                            | Compiles `text/template` (or `html/template` for email auto-escape); per-id in-process cache with TTL.                                                                                            |
+| `observability/metrics/`            | `MetricsRecorder`                             | Prometheus-backed counter / histogram set. Exposed at `/metrics`. Tests use a no-op fake instead.                                                                                                  |
+| `observability/logger/`             | n/a                                           | slog JSON logger (cross-cutting, not behind a port).                                                                                                                                               |
 
 ### 5.3 Platform
 
-| Module                          | Notes                                                                                              |
-| ------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `platform/auth/`                | `Verifier.Verify(...)` + `Sign(...)`. Constant-time comparison. Skew-bounded timestamp check.      |
-| `platform/config/`              | `caarlos0/env` env→struct binding. `RateLimit.AsMap()` produces the channel-keyed map.             |
-| `platform/observability/`       | `slog` JSON logger configured by level. (Prometheus impl lives in the outbound adapter.)           |
+| Module                              | Notes                                                                                              |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `internal/platform/auth/`           | `Verifier.Verify(...)` + `Sign(...)`. Constant-time comparison. Skew-bounded timestamp check.      |
+| `internal/platform/config/`         | `caarlos0/env` env→struct binding. `RateLimit.AsMap()` produces the channel-keyed map.             |
 
 ---
 
@@ -526,4 +540,4 @@ Run unit tests with `go test -race -count=1 ./...`. Integration tests assume
 
 ---
 
-*Last reviewed: 2026-05-08 — after the hexagonal refactor.*
+*Last reviewed: 2026-05-22 — after the structural refactor (infrastructure/, middleware/, observability/ at repo root; service/ and port/ promoted in internal/; driving adapters collocated inside cmd/).*

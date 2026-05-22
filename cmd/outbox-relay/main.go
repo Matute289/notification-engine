@@ -12,12 +12,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/example/notification-engine/internal/adapter/outbound/postgres"
-	"github.com/example/notification-engine/internal/adapter/outbound/rabbitmq"
-	"github.com/example/notification-engine/internal/app/usecase"
+	"github.com/example/notification-engine/infrastructure/postgres"
+	"github.com/example/notification-engine/infrastructure/rabbitmq"
+	"github.com/example/notification-engine/internal/service"
 	"github.com/example/notification-engine/internal/domain"
 	"github.com/example/notification-engine/internal/platform/config"
-	"github.com/example/notification-engine/internal/platform/observability"
+	"github.com/example/notification-engine/observability/logger"
 )
 
 func main() {
@@ -32,7 +32,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	log := observability.NewLogger(cfg.LogLevel)
+	log := logger.NewLogger(cfg.LogLevel)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -53,11 +53,11 @@ func run() error {
 	}
 
 	repo := postgres.NewNotificationRepository(pool)
-	uc := &usecase.RelayOutbox{
+	uc := &service.RelayOutbox{
 		Outbox:    repo,
 		Publisher: rabbitmq.NewPublisher(mq),
 		Log:       log,
-		Cfg:       usecase.RelayConfig{BatchSize: cfg.RelayBatchSize},
+		Cfg:       service.RelayConfig{BatchSize: cfg.RelayBatchSize},
 	}
 
 	log.Info("outbox-relay starting",

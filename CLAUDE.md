@@ -6,19 +6,68 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Go notification engine implementing the design from chapter 10 of *System Design Interview Vol. 1* (`Notification_System.pdf` in this repo). API service + per-channel workers, backed by Postgres, Redis, and RabbitMQ, all runnable via docker-compose. Channels: iOS push, Android push, SMS, email. Locally everything is wired to a **mock provider** so the stack runs without third-party credentials.
 
-The codebase is organised in **hexagonal / ports-and-adapters** style. Read `CLAUDE_CONTEXT.md` first — it captures the working design, the layer rules, file index, and outstanding follow-ups. The end-user-facing design lives in `architecture-specifications.md` (when present).
+Read `CLAUDE_CONTEXT.md` first — it captures the working design, the layer rules, file index, and outstanding follow-ups. The end-user-facing design lives in `architecture-specifications.md`.
 
-## Architectural rules (do not violate)
+## Project layout
 
-- **`internal/domain/`** — entities, value objects, sentinel errors. Imports nothing outside its own package and `time`/`uuid`. Owns its invariants (e.g. `Notification.MarkSent()` enforces state-machine transitions).
-- **`internal/app/port/`** — interfaces only. Defined by what the application *needs*. No imports of any adapter.
-- **`internal/app/usecase/`** — orchestration. Depends only on `domain` + `port`. One struct per use case, single `Execute` method.
-- **`internal/adapter/inbound/{httpapi,worker}/`** — driving adapters. Translate transport (HTTP, AMQP) into use-case input. Never contain business logic.
-- **`internal/adapter/outbound/{postgres,redis,rabbitmq,provider/mock,rendering,observability}/`** — driven adapters. Implement ports. Each has a compile-time assertion `var _ port.X = (*Y)(nil)`.
-- **`internal/platform/{auth,config,observability}/`** — cross-cutting infra (HMAC, env config, slog logger).
-- **`cmd/{api,worker}/main.go`** — composition roots. Only place a concrete adapter is bound to a port.
+```
+NotificationEngine/
+  cmd/
+    api/
+      http/               ← HTTP driving adapter (routing, middleware wiring, RouterConfig)
+        router.go         (package httpapi)
+        handlers/
+          handlers.go     (package handlers — Handler struct + exported handler methods)
+        dto/              (package dto — one file per exported DTO type)
+      main.go             ← composition root for API service
+    worker/
+      consumer/
+        consumer.go       (package consumer — AMQP Consumer struct)
+      main.go             ← composition root for channel worker
+    janitor/main.go       ← composition root for stuck-notification janitor
+    outbox-relay/main.go  ← composition root for outbox relay
+  middleware/             ← HTTP middleware (RequestID, Recoverer, AccessLog, HMACAuth, AppKeyRateLimit)
+  observability/
+    logger/logger.go      (package logger — slog NewLogger)
+    metrics/metrics.go    (package metrics — Prometheus MetricsRecorder impl)
+  infrastructure/
+    postgres/             ← NotificationRepository, TemplateRepository, UserRepository, OutboxRepository
+    redis/                ← RateLimiter, Deduper
+    rabbitmq/             ← EventPublisher + topology setup
+    rendering/            ← TemplateRenderer impl
+    provider/
+      mock/               ← mock NotificationProvider (used locally)
+      apns/, fcm/, twilio/, sendgrid/  ← real provider skeletons
+  internal/
+    domain/               ← entities, value objects, sentinel errors, state machine
+    port/                 ← outbound port interfaces (what services need from infrastructure)
+    service/              ← one struct + Execute() per use case (SubmitNotification, ProcessNotification, …)
+    platform/
+      auth/               ← HMAC verifier
+      config/             ← env-based config loader
+  migrations/             ← goose SQL migrations
+  deploy/                 ← Dockerfiles + docker-compose
+  test/integration/       ← end-to-end test (build tag: integration)
+  configs/, scripts/, Makefile
+```
 
-Direction of imports: domain ← app ← adapter ← cmd. Never the other way.
+## Architectural rules
+
+- **`internal/domain/`** — entities, value objects, sentinel errors. Imports nothing outside its own package and `time`/`uuid`. Owns its invariants.
+- **`internal/port/`** — interfaces only. Defined by what services need. No imports of any infrastructure package.
+- **`internal/service/`** — orchestration. Depends only on `domain` + `port`. One struct per use case, single `Execute` method.
+- **`middleware/`** — HTTP middleware. Imports `internal/port` and `internal/platform/auth`.
+- **`infrastructure/{postgres,redis,rabbitmq,rendering,provider}/`** — driven adapters. Implement ports. Each has a compile-time assertion `var _ port.X = (*Y)(nil)`.
+- **`observability/logger/`** — slog logger (cross-cutting).
+- **`observability/metrics/`** — Prometheus MetricsRecorder implementation.
+- **`cmd/api/http/`** and **`cmd/worker/consumer/`** — driving adapters that live inside their composition root directories. They translate HTTP/AMQP into service input; they contain no business logic.
+- **`cmd/{api,worker,janitor,outbox-relay}/main.go`** — composition roots. Only place a concrete infrastructure adapter is bound to a port.
+
+Import direction: `domain ← port ← service ← {infrastructure, middleware, observability, cmd/.../http, cmd/.../consumer} ← cmd/*/main.go`
+
+**Exception**: `cmd/api/http/` and `cmd/worker/consumer/` are driving adapters that live inside `cmd/` for colocation with their composition root — they are NOT composition roots themselves.
+
+Packages outside `internal/` (`infrastructure/`, `middleware/`, `observability/`) are importable by other modules; they contain no public API surface beyond what the engine exposes internally.
 
 ## Commands
 
@@ -27,11 +76,11 @@ Direction of imports: domain ← app ← adapter ← cmd. Never the other way.
 go build ./...
 go vet ./...
 
-# Unit tests (fast, no I/O — use cases run against in-memory port fakes)
+# Unit tests (fast, no I/O — services run against in-memory port fakes)
 go test -race -count=1 ./...
 
 # Run a single test
-go test -race -run TestSubmit_HappyPath ./internal/app/usecase/...
+go test -race -run TestSubmit_HappyPath ./internal/service/...
 
 # Bring up the full stack (postgres + redis + rabbitmq + api + 4 workers + one-shot migrate)
 make up
@@ -47,8 +96,9 @@ APP_KEY=demo-app APP_SECRET=demo-secret-please-change ./scripts/sign-and-submit.
 
 ## Conventions
 
-- Errors: every adapter wraps with `fmt.Errorf("adapter-tag: %w", err)`. Use cases surface `domain.Err*` sentinels (`ErrNotFound`, `ErrInvalidInput`, `ErrOptedOut`, `ErrRateLimited`, `ErrInvalidStatusTransition`). HTTP handler maps these to status codes via `errors.Is`.
+- Errors: every infrastructure adapter wraps with `fmt.Errorf("adapter-tag: %w", err)`. Services surface `domain.Err*` sentinels (`ErrNotFound`, `ErrInvalidInput`, `ErrOptedOut`, `ErrRateLimited`, `ErrInvalidStatusTransition`). HTTP handler maps these to status codes via `errors.Is`.
 - HTTP errors: `{ "code", "message" }` JSON only.
-- Domain types are persistence-agnostic. Adapters convert to/from rows / messages.
-- Tests of use cases use the fakes in `internal/app/usecase/fakes_test.go` (one fake per port, satisfied by compile-time `var _ port.X = (*Y)(nil)`). Adapter tests only cover the adapter (e.g. miniredis for the Redis adapter); business logic is covered at the use-case layer.
+- Domain types are persistence-agnostic. Infrastructure adapters convert to/from rows / messages.
+- Tests of services use the fakes in `internal/service/fakes_test.go` (one fake per port, satisfied by compile-time `var _ port.X = (*Y)(nil)`). Infrastructure adapter tests only cover the adapter (e.g. miniredis for the Redis adapter); business logic is covered at the service layer.
 - HMAC: clients sign `timestamp \n method \n path \n raw-body` with SHA-256, send `X-App-Key`, `X-App-Timestamp`, `X-App-Signature`.
+- Handler struct fields use the `Svc` suffix (`SubmitSvc`, `GetSvc`, `CreateTemplateSvc`, …) to avoid name collisions with the exported handler methods.

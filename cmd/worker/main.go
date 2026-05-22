@@ -16,20 +16,20 @@ import (
 	"syscall"
 	"time"
 
-	workerin "github.com/example/notification-engine/internal/adapter/inbound/worker"
-	obsadapter "github.com/example/notification-engine/internal/adapter/outbound/observability"
-	"github.com/example/notification-engine/internal/adapter/outbound/postgres"
-	"github.com/example/notification-engine/internal/adapter/outbound/provider/apns"
-	"github.com/example/notification-engine/internal/adapter/outbound/provider/fcm"
-	"github.com/example/notification-engine/internal/adapter/outbound/provider/mock"
-	"github.com/example/notification-engine/internal/adapter/outbound/provider/sendgrid"
-	"github.com/example/notification-engine/internal/adapter/outbound/provider/twilio"
-	"github.com/example/notification-engine/internal/adapter/outbound/rabbitmq"
-	"github.com/example/notification-engine/internal/app/port"
-	"github.com/example/notification-engine/internal/app/usecase"
+	"github.com/example/notification-engine/cmd/worker/consumer"
+	"github.com/example/notification-engine/infrastructure/postgres"
+	"github.com/example/notification-engine/infrastructure/provider/apns"
+	"github.com/example/notification-engine/infrastructure/provider/fcm"
+	"github.com/example/notification-engine/infrastructure/provider/mock"
+	"github.com/example/notification-engine/infrastructure/provider/sendgrid"
+	"github.com/example/notification-engine/infrastructure/provider/twilio"
+	"github.com/example/notification-engine/infrastructure/rabbitmq"
 	"github.com/example/notification-engine/internal/domain"
 	"github.com/example/notification-engine/internal/platform/config"
-	"github.com/example/notification-engine/internal/platform/observability"
+	"github.com/example/notification-engine/internal/port"
+	"github.com/example/notification-engine/internal/service"
+	"github.com/example/notification-engine/observability/logger"
+	"github.com/example/notification-engine/observability/metrics"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -47,7 +47,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	log := observability.NewLogger(cfg.LogLevel)
+	log := logger.NewLogger(cfg.LogLevel)
 
 	channel, err := domain.ParseChannel(cfg.WorkerChannel)
 	if err != nil {
@@ -75,26 +75,26 @@ func run() error {
 
 	notificationsRepo := postgres.NewNotificationRepository(pool)
 	publisher := rabbitmq.NewPublisher(mq)
-	metrics := obsadapter.NewPrometheusMetrics()
+	m := metrics.NewPrometheusMetrics()
 
 	prv, err := buildProvider(cfg, log)
 	if err != nil {
 		return err
 	}
 
-	// --- use case ---
-	process := &usecase.ProcessNotification{
+	// --- service ---
+	process := &service.ProcessNotification{
 		Notifications: notificationsRepo,
 		Provider:      prv,
 		Publisher:     publisher,
-		Metrics:       metrics,
+		Metrics:       m,
 		Clock:         port.RealClock{},
 		Log:           log,
-		Cfg:           usecase.ProcessNotificationConfig{MaxRetries: cfg.MaxRetries},
+		Cfg:           service.ProcessNotificationConfig{MaxRetries: cfg.MaxRetries},
 	}
 
 	// --- inbound adapter ---
-	consumer := &workerin.Consumer{
+	c := &consumer.Consumer{
 		Channel:     channel,
 		Concurrency: cfg.WorkerConcurrency,
 		Conn:        mq,
@@ -104,8 +104,8 @@ func run() error {
 
 	admin := startAdminServer(log, channel)
 	defer func() {
-		shutdown, c := context.WithTimeout(context.Background(), 5*time.Second)
-		defer c()
+		shutdown, sc := context.WithTimeout(context.Background(), 5*time.Second)
+		defer sc()
 		_ = admin.Shutdown(shutdown)
 	}()
 
@@ -114,7 +114,7 @@ func run() error {
 		"concurrency", cfg.WorkerConcurrency,
 		"admin_addr", adminAddr,
 	)
-	return consumer.Run(ctx)
+	return c.Run(ctx)
 }
 
 func buildProvider(cfg config.Config, log *slog.Logger) (port.NotificationProvider, error) {
