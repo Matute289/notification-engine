@@ -17,7 +17,16 @@ NotificationEngine/
       http/               ← HTTP driving adapter (routing, middleware wiring, RouterConfig)
         router.go         (package httpapi)
         handlers/
-          handlers.go     (package handlers — Handler struct + exported handler methods)
+          handler.go            (Handler struct + writeJSON)
+          error.go              (mapDomainError + writeError)
+          submit_notification.go
+          get_notification.go
+          create_template.go
+          get_template.go
+          update_setting.go
+          register_device.go
+          fakes_test.go         (shared port fakes + withURLParam helper)
+          *_test.go             (one test file per handler + error_test.go)
         dto/              (package dto — one file per exported DTO type)
       main.go             ← composition root for API service
     worker/
@@ -101,5 +110,6 @@ APP_KEY=demo-app APP_SECRET=demo-secret-please-change ./scripts/sign-and-submit.
 - HTTP errors: `{ "code", "message" }` JSON only.
 - Domain types are persistence-agnostic. Infrastructure adapters convert to/from rows / messages.
 - Tests of services use the fakes in `internal/service/fakes_test.go` (one fake per port, satisfied by compile-time `var _ port.X = (*Y)(nil)`). Infrastructure adapter tests only cover the adapter (e.g. miniredis for the Redis adapter); business logic is covered at the service layer.
+- Handler tests in `cmd/api/http/handlers/` use `package handlers` (white-box) to access unexported `mapDomainError`/`writeError`. Each handler has its own `*_test.go`; shared port fakes live in `fakes_test.go`. Tests drive handlers via `httptest.NewRecorder` + chi route-context injection (`withURLParam`).
 - HMAC: clients sign `timestamp \n method \n path \n raw-body` with SHA-256, send `X-App-Key`, `X-App-Timestamp`, `X-App-Signature`.
 - Handler struct fields use the `Svc` suffix (`SubmitSvc`, `GetSvc`, `CreateTemplateSvc`, …) to avoid name collisions with the exported handler methods.
