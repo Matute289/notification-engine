@@ -31,10 +31,11 @@ NotificationEngine/
     logger/logger.go      (package logger — slog NewLogger)
     metrics/metrics.go    (package metrics — Prometheus MetricsRecorder impl)
   infrastructure/
-    postgres/             ← NotificationRepository, TemplateRepository, UserRepository, OutboxRepository
-    redis/                ← RateLimiter, Deduper
+    postgres/             ← NotificationRepository, UserRepository, OutboxRepository
+    mongodb/              ← TemplateRepository (templates + media URLs)
+    redis/                ← RateLimiter, Deduper, TemplateCache (L2 decorator)
     rabbitmq/             ← EventPublisher + topology setup
-    rendering/            ← TemplateRenderer impl
+    rendering/            ← TemplateRenderer impl (in-process L1 cache)
     provider/
       mock/               ← mock NotificationProvider (used locally)
       apns/, fcm/, twilio/, sendgrid/  ← real provider skeletons
@@ -57,7 +58,7 @@ NotificationEngine/
 - **`internal/port/`** — interfaces only. Defined by what services need. No imports of any infrastructure package.
 - **`internal/service/`** — orchestration. Depends only on `domain` + `port`. One struct per use case, single `Execute` method.
 - **`middleware/`** — HTTP middleware. Imports `internal/port` and `internal/platform/auth`.
-- **`infrastructure/{postgres,redis,rabbitmq,rendering,provider}/`** — driven adapters. Implement ports. Each has a compile-time assertion `var _ port.X = (*Y)(nil)`.
+- **`infrastructure/{postgres,mongodb,redis,rabbitmq,rendering,provider}/`** — driven adapters. Implement ports. Each has a compile-time assertion `var _ port.X = (*Y)(nil)`.
 - **`observability/logger/`** — slog logger (cross-cutting).
 - **`observability/metrics/`** — Prometheus MetricsRecorder implementation.
 - **`cmd/api/http/`** and **`cmd/worker/consumer/`** — driving adapters that live inside their composition root directories. They translate HTTP/AMQP into service input; they contain no business logic.

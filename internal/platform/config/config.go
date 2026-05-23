@@ -27,6 +27,11 @@ type Config struct {
 	DedupeTTL    time.Duration `env:"DEDUPE_TTL" envDefault:"24h"`
 	RateLimitWindow time.Duration `env:"RATELIMIT_WINDOW" envDefault:"1h"`
 
+	// MongoDB (used for template storage).
+	MongoURI            string        `env:"MONGODB_URI,required"`
+	MongoDatabase       string        `env:"MONGODB_DATABASE" envDefault:"notification_engine"`
+	TemplateCacheTTL    time.Duration `env:"TEMPLATE_CACHE_TTL" envDefault:"5m"`
+
 	// Per-app-key global API QPS cap. 0 disables.
 	AppKeyRateLimit  int           `env:"APP_KEY_RATE_LIMIT" envDefault:"0"`
 	AppKeyRateWindow time.Duration `env:"APP_KEY_RATE_WINDOW" envDefault:"1s"`

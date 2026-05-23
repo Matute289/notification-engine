@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/example/notification-engine/internal/domain"
+	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
@@ -89,4 +91,87 @@ func TestDeduper_TTLReleasesClaim(t *testing.T) {
 	again, err := d.Claim(context.Background(), "evt-x", time.Second)
 	require.NoError(t, err)
 	require.True(t, again)
+}
+
+// --- TemplateCache tests ---
+
+type stubTemplateRepo struct {
+	tpls  map[uuid.UUID]domain.Template
+	calls int
+}
+
+func (s *stubTemplateRepo) Create(_ context.Context, t domain.Template) error {
+	s.tpls[t.ID] = t
+	s.calls++
+	return nil
+}
+
+func (s *stubTemplateRepo) Get(_ context.Context, id uuid.UUID) (domain.Template, error) {
+	s.calls++
+	t, ok := s.tpls[id]
+	if !ok {
+		return domain.Template{}, domain.ErrNotFound
+	}
+	return t, nil
+}
+
+func seedTemplate(id uuid.UUID) domain.Template {
+	t, _ := domain.NewTemplate(id, "welcome", domain.ChannelEmail, "en",
+		"Hello {{.Name}}", "Welcome {{.Name}}", nil, 1, time.Now())
+	return t
+}
+
+func TestTemplateCache_MissPopulatesCache(t *testing.T) {
+	c, _ := newRedis(t)
+	stub := &stubTemplateRepo{tpls: map[uuid.UUID]domain.Template{}}
+	id := uuid.New()
+	stub.tpls[id] = seedTemplate(id)
+
+	cache := NewTemplateCache(stub, c, time.Minute)
+
+	// First call: cache miss, should hit the underlying repo.
+	got, err := cache.Get(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, id, got.ID)
+	require.Equal(t, 1, stub.calls)
+
+	// Second call: should be served from Redis without hitting the repo again.
+	got2, err := cache.Get(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, id, got2.ID)
+	require.Equal(t, 1, stub.calls, "repo should not be called again on cache hit")
+}
+
+func TestTemplateCache_CreateWritesToCache(t *testing.T) {
+	c, _ := newRedis(t)
+	stub := &stubTemplateRepo{tpls: map[uuid.UUID]domain.Template{}}
+	id := uuid.New()
+	tmpl := seedTemplate(id)
+
+	cache := NewTemplateCache(stub, c, time.Minute)
+
+	require.NoError(t, cache.Create(context.Background(), tmpl))
+	require.Equal(t, 1, stub.calls)
+
+	// Get should be served from cache — repo call count stays at 1.
+	got, err := cache.Get(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, id, got.ID)
+	require.Equal(t, 1, stub.calls, "Get after Create should hit cache, not repo")
+}
+
+func TestTemplateCache_TTLEviction(t *testing.T) {
+	c, mr := newRedis(t)
+	stub := &stubTemplateRepo{tpls: map[uuid.UUID]domain.Template{}}
+	id := uuid.New()
+	stub.tpls[id] = seedTemplate(id)
+
+	cache := NewTemplateCache(stub, c, time.Second)
+
+	_, _ = cache.Get(context.Background(), id) // populate cache
+	mr.FastForward(2 * time.Second)            // expire the entry
+
+	_, err := cache.Get(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, 2, stub.calls, "repo must be called again after TTL expiry")
 }

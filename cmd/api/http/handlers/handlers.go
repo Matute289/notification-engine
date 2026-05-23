@@ -118,7 +118,7 @@ func (h *Handler) CreateTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := h.CreateTemplateSvc.Execute(r.Context(), service.CreateTemplateInput{
 		Name: req.Name, Channel: channel, Locale: req.Locale,
-		Subject: req.Subject, Body: req.Body, Version: req.Version,
+		Subject: req.Subject, Body: req.Body, MediaURLs: req.MediaURLs, Version: req.Version,
 	})
 	if err != nil {
 		mapDomainError(w, err)

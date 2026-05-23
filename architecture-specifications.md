@@ -142,7 +142,7 @@ illegal state.
 | `Channel`       | value object  | One of `push_ios`, `push_android`, `sms`, `email`.                                     |
 | `Recipient`     | value object  | UserID and/or raw destination (Email / Phone / DeviceToken).                           |
 | `Email`/`Phone`/`DeviceToken`/`EventID` | value objects | Self-validating wrappers over `string`.                              |
-| `Template`      | aggregate     | Versioned subject + body, parameterised with `text/template` (or `html/template`).    |
+| `Template`      | aggregate     | Versioned subject + body + optional `MediaURLs` (image/attachment URLs), stored in MongoDB. |
 | `User`          | entity        | Contact info captured at signup.                                                       |
 | `Device`        | entity        | One push token (per channel) belonging to a user.                                      |
 | `Setting`       | entity        | Per-(user, channel) opt-in flag. Default = opt-in.                                     |
@@ -247,8 +247,9 @@ message can be re-driven by a janitor; the inverse never happens).
 
 | Module                              | Implements                                    | Notes                                                                                                                                                                                              |
 | ----------------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `infrastructure/postgres/`          | `Notification/Template/UserRepository`        | pgx pool. Aggregates split per-file; one type per port. JSON columns for `recipient` + `variables`.                                                                                                |
-| `infrastructure/redis/`             | `RateLimiter`, `Deduper`                      | Token-bucket via Lua script (atomic refill+consume); dedupe via `SETNX` + TTL.                                                                                                                     |
+| `infrastructure/postgres/`          | `Notification/UserRepository`                 | pgx pool. Aggregates split per-file; one type per port. JSON columns for `recipient` + `variables`.                                                                                                |
+| `infrastructure/mongodb/`           | `TemplateRepository`                          | MongoDB collection `notification_templates`. `_id` is the UUID string. Unique index on `(name, channel, locale, version)`. Supports `media_urls` array for rich-media templates.                  |
+| `infrastructure/redis/`             | `RateLimiter`, `Deduper`, `TemplateCache`     | Token-bucket via Lua script; dedupe via `SETNX`+TTL; `TemplateCache` is a read-through write-through decorator wrapping the MongoDB repo (key `notif:tmpl:<uuid>`, configurable TTL).             |
 | `infrastructure/rabbitmq/`          | `EventPublisher`                              | Topology declared by `Setup(channels)` — one work + retry + dead queue per channel; retries use the dead-letter-with-TTL pattern. Wire format uses an explicit `publishedNotification` struct so domain stays stable. |
 | `infrastructure/provider/mock/`     | `NotificationProvider`                        | Logs every send; an injected `failureRate` exercises the retry branch in demos.                                                                                                                    |
 | `infrastructure/provider/{apns,fcm,twilio,sendgrid}/` | `NotificationProvider`        | Real provider skeletons with full request/response shape and transient/terminal error mapping.                                                                                                     |
@@ -267,19 +268,42 @@ message can be re-driven by a janitor; the inverse never happens).
 
 ## 6. Data Model
 
-### 6.1 Schema (`migrations/0001_init.sql`)
+### 6.1 PostgreSQL schema (`migrations/0001_init.sql`)
 
 | Table                   | Purpose                                                                 | Notable columns / indexes                                                                                       |
 | ----------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `users`                 | Contact info (PDF Figure 10-8)                                          | `email`, `country_code`, `phone_number`. Unique partial idx on `LOWER(email)`.                                  |
 | `devices`               | Push tokens (one user → many devices)                                   | `(channel, device_token)` unique. Index on `user_id`.                                                           |
 | `notification_settings` | Per-channel opt-in                                                      | PK `(user_id, channel)`.                                                                                        |
-| `notification_templates`| Versioned, parameterised messages                                       | Unique `(name, channel, locale, version)`.                                                                      |
 | `notification_log`      | Authoritative life-cycle row per notification                           | UUID PK, **unique** `event_id` (the dedupe backstop), `status` + `attempt` + `last_error`, `recipient` JSONB.    |
 | `analytics_events`      | One-to-many event timeline (sent / dead_letter / click / unsubscribe)   | FK to `notification_log`, JSONB `metadata`.                                                                     |
 
-`migrations/0002_seed.sql` registers a demo user, two devices, three
-templates so a freshly-booted stack accepts a meaningful POST immediately.
+`migrations/0002_seed.sql` registers a demo user and two devices. Template
+seeding is skipped — the seed inserts templates directly into MongoDB
+(see `migrations/0002_seed.sql` notes). `migrations/0004_template_to_mongodb.sql`
+drops the old `notification_templates` Postgres table and the FK from
+`notification_log.template_id`.
+
+### 6.2 MongoDB collection (`notification_engine.notification_templates`)
+
+| Field        | Type      | Notes                                                   |
+| ------------ | --------- | ------------------------------------------------------- |
+| `_id`        | string    | UUID (e.g. `"550e8400-e29b-41d4-a716-446655440000"`)   |
+| `name`       | string    |                                                         |
+| `channel`    | string    | `push_ios`, `push_android`, `sms`, `email`              |
+| `locale`     | string    | Default `en`                                            |
+| `subject`    | string    | Go template string (empty for push/sms)                 |
+| `body`       | string    | Go template string                                      |
+| `media_urls` | []string  | Optional URLs to images / attachments for rich push/MMS |
+| `version`    | int       |                                                         |
+| `created_at` | date      |                                                         |
+| `updated_at` | date      |                                                         |
+
+Unique index: `(name, channel, locale, version)`.
+
+**Template caching (two layers):**
+1. **L1 — in-process** (`infrastructure/rendering.Renderer`): compiled `text/template`/`html/template` per id, TTL 5 min.
+2. **L2 — Redis** (`infrastructure/redis.TemplateCache`): raw `domain.Template` JSON at key `notif:tmpl:<uuid>`, TTL configurable via `TEMPLATE_CACHE_TTL` (default 5 min).
 
 ---
 
@@ -445,6 +469,9 @@ See `.env.example` for the canonical list. Highlights:
 ```
 LOG_LEVEL, HTTP_ADDR
 POSTGRES_DSN, REDIS_ADDR, RABBITMQ_URL          (required)
+MONGODB_URI                                     (required, e.g. mongodb://notif:notif@mongodb:27017)
+MONGODB_DATABASE                                (default: notification_engine)
+TEMPLATE_CACHE_TTL                              (default: 5m — Redis L2 TTL for templates)
 APP_CLIENTS=key1:secret1,key2:secret2,...        (required)
 PROVIDER_MODE=mock|real
 MAX_RETRIES=5
@@ -466,6 +493,7 @@ WORKER_CONCURRENCY=8
 
 - `postgres:16-alpine`
 - `redis:7-alpine`
+- `mongo:7` — template store (port `:27017`, persisted in `mongodata` volume)
 - `rabbitmq:3-management` (UI on `:15672`)
 - `migrate` (one-shot goose runner; `Dockerfile.migrate`)
 - `api` (`Dockerfile.api`) on `:8080`
@@ -540,4 +568,4 @@ Run unit tests with `go test -race -count=1 ./...`. Integration tests assume
 
 ---
 
-*Last reviewed: 2026-05-22 — after the structural refactor (infrastructure/, middleware/, observability/ at repo root; service/ and port/ promoted in internal/; driving adapters collocated inside cmd/).*
+*Last reviewed: 2026-05-22 — MongoDB template migration: templates moved from Postgres to MongoDB with MediaURLs support; Redis TemplateCache L2 added.*

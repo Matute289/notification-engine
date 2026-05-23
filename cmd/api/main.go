@@ -17,6 +17,7 @@ import (
 
 	httpapi "github.com/example/notification-engine/cmd/api/http"
 	"github.com/example/notification-engine/cmd/api/http/handlers"
+	mongoinfra "github.com/example/notification-engine/infrastructure/mongodb"
 	"github.com/example/notification-engine/infrastructure/postgres"
 	"github.com/example/notification-engine/infrastructure/rabbitmq"
 	"github.com/example/notification-engine/infrastructure/rendering"
@@ -60,6 +61,12 @@ func run() error {
 	}
 	defer rdb.Close()
 
+	mongoClient, mongoDB, err := mongoinfra.Connect(ctx, cfg.MongoURI, cfg.MongoDatabase)
+	if err != nil {
+		return fmt.Errorf("mongodb: %w", err)
+	}
+	defer func() { _ = mongoClient.Disconnect(context.Background()) }()
+
 	mq, err := rabbitmq.Dial(cfg.RabbitMQURL, log)
 	if err != nil {
 		return fmt.Errorf("rabbitmq: %w", err)
@@ -70,8 +77,13 @@ func run() error {
 	}
 
 	notificationsRepo := postgres.NewNotificationRepository(pool)
-	templatesRepo := postgres.NewTemplateRepository(pool)
 	usersRepo := postgres.NewUserRepository(pool)
+	mongoTemplatesRepo, err := mongoinfra.NewTemplateRepository(mongoDB)
+	if err != nil {
+		return fmt.Errorf("mongodb templates: %w", err)
+	}
+	// Redis L2 cache in front of MongoDB; the renderer adds an in-process L1.
+	templatesRepo := redisinfra.NewTemplateCache(mongoTemplatesRepo, rdb, cfg.TemplateCacheTTL)
 	publisher := rabbitmq.NewPublisher(mq)
 	limiter := redisinfra.NewRateLimiter(rdb)
 	deduper := redisinfra.NewDeduper(rdb)

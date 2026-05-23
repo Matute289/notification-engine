@@ -25,6 +25,21 @@ services:
       timeout: 3s
       retries: 20
 
+  mongodb:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: notif
+      MONGO_INITDB_ROOT_PASSWORD: notif
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   rabbitmq:
     image: rabbitmq:3-management
     environment:
@@ -58,6 +73,7 @@ services:
       POSTGRES_DSN: postgres://notif:notif@postgres:5432/notif?sslmode=disable
       REDIS_ADDR: redis:6379
       RABBITMQ_URL: amqp://notif:notif@rabbitmq:5672/
+      MONGODB_URI: mongodb://notif:notif@mongodb:27017
     ports:
       - "8080:8080"
     depends_on:
@@ -66,6 +82,8 @@ services:
       redis:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      mongodb:
         condition: service_healthy
 
   worker-push-ios:
@@ -169,3 +187,4 @@ services:
 
 volumes:
   pgdata:
+  mongodata:

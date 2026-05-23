@@ -16,16 +16,17 @@ type CreateTemplate struct {
 }
 
 type CreateTemplateInput struct {
-	Name    string
-	Channel domain.Channel
-	Locale  string
-	Subject string
-	Body    string
-	Version int
+	Name      string
+	Channel   domain.Channel
+	Locale    string
+	Subject   string
+	Body      string
+	MediaURLs []string
+	Version   int
 }
 
 func (u *CreateTemplate) Execute(ctx context.Context, in CreateTemplateInput) (domain.Template, error) {
-	t, err := domain.NewTemplate(uuid.New(), in.Name, in.Channel, in.Locale, in.Subject, in.Body, in.Version, u.Clock.Now())
+	t, err := domain.NewTemplate(uuid.New(), in.Name, in.Channel, in.Locale, in.Subject, in.Body, in.MediaURLs, in.Version, u.Clock.Now())
 	if err != nil {
 		return domain.Template{}, err
 	}
