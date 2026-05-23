@@ -193,7 +193,7 @@ adapter maps them to status codes via `errors.Is`.
 
 ## 4. Application Layer
 
-### 4.1 Ports (`internal/app/port/`)
+### 4.1 Ports (`internal/port/`)
 
 | Port                       | Purpose                                                                                              |
 | -------------------------- | ---------------------------------------------------------------------------------------------------- |
@@ -210,19 +210,19 @@ adapter maps them to status codes via `errors.Is`.
 | `MetricsRecorder`          | Domain-shaped metric emission.                                                                       |
 | `Clock`                    | Test-controlled "now".                                                                               |
 
-### 4.2 Use cases (`internal/app/usecase/`)
+### 4.2 Service (`internal/service/`)
 
-| Use case                  | Driven by             | Description                                                                                                                                                                                              |
-| ------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SubmitNotification`      | `httpapi`             | Dedupe → opt-out check → rate limit → hydrate recipient (when UserID supplied) → render template → mark enqueued → `Publisher.Encode` → `Notifications.SubmitWithOutbox` (atomic log+outbox) → metric.    |
-| `GetNotification`         | `httpapi`             | Read one notification by id.                                                                                                                                                                            |
-| `ProcessNotification`     | `worker` (AMQP)       | `MarkInFlight` → call `NotificationProvider` → on success `MarkSent`; on `ErrTransient` republish via `EventPublisher.Retry` (and `MarkRetrying`/`MarkDeadLetter`); on terminal error `MarkDeadLetter`. |
-| `RescueStuckNotifications`| `janitor`             | Periodic. Lists `in_flight` rows older than `StuckThreshold`, republishes each, resets status to `enqueued`.                                                                                              |
-| `RelayOutbox`             | `outbox-relay`        | Periodic. Claims a batch of pending outbox rows in one TX, calls `Publisher.PublishRaw` for each, marks rows published, commits.                                                                          |
-| `RegisterDevice`          | `httpapi`             | Upsert a (user, channel, token) device.                                                                                                                                                                  |
-| `UpdateSetting`           | `httpapi`             | Upsert opt-in for a (user, channel).                                                                                                                                                                     |
-| `CreateTemplate`          | `httpapi`             | Validate via `domain.NewTemplate` and persist.                                                                                                                                                           |
-| `GetTemplate`             | `httpapi`             | Read one template by id.                                                                                                                                                                                 |
+| Service                    | Driven by             | Description                                                                                                                                                                                              |
+|----------------------------| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SubmitNotification`       | `httpapi`             | Dedupe → opt-out check → rate limit → hydrate recipient (when UserID supplied) → render template → mark enqueued → `Publisher.Encode` → `Notifications.SubmitWithOutbox` (atomic log+outbox) → metric.    |
+| `GetNotification`          | `httpapi`             | Read one notification by id.                                                                                                                                                                            |
+| `ProcessNotification`      | `worker` (AMQP)       | `MarkInFlight` → call `NotificationProvider` → on success `MarkSent`; on `ErrTransient` republish via `EventPublisher.Retry` (and `MarkRetrying`/`MarkDeadLetter`); on terminal error `MarkDeadLetter`. |
+| `RescueStuckNotifications` | `janitor`             | Periodic. Lists `in_flight` rows older than `StuckThreshold`, republishes each, resets status to `enqueued`.                                                                                              |
+| `RelayOutbox`              | `outbox-relay`        | Periodic. Claims a batch of pending outbox rows in one TX, calls `Publisher.PublishRaw` for each, marks rows published, commits.                                                                          |
+| `RegisterDevice`           | `httpapi`             | Upsert a (user, channel, token) device.                                                                                                                                                                  |
+| `UpdateSetting`            | `httpapi`             | Upsert opt-in for a (user, channel).                                                                                                                                                                     |
+| `CreateTemplate`           | `httpapi`             | Validate via `domain.NewTemplate` and persist.                                                                                                                                                           |
+| `GetTemplate`              | `httpapi`             | Read one template by id.                                                                                                                                                                                 |
 
 `SubmitNotification` is the largest use case; everything else is a thin
 orchestration around one or two ports. The persist-then-publish-then-mark
@@ -249,7 +249,7 @@ message can be re-driven by a janitor; the inverse never happens).
 | ----------------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `infrastructure/postgres/`          | `Notification/UserRepository`                 | pgx pool. Aggregates split per-file; one type per port. JSON columns for `recipient` + `variables`.                                                                                                |
 | `infrastructure/mongodb/`           | `TemplateRepository`                          | MongoDB collection `notification_templates`. `_id` is the UUID string. Unique index on `(name, channel, locale, version)`. Supports `media_urls` array for rich-media templates.                  |
-| `infrastructure/redis/`             | `RateLimiter`, `Deduper`, `TemplateCache`     | Token-bucket via Lua script; dedupe via `SETNX`+TTL; `TemplateCache` is a read-through write-through decorator wrapping the MongoDB repo (key `notif:tmpl:<uuid>`, configurable TTL).             |
+| `infrastructure/redis/`             | `RateLimiter`, `Deduper`, `TemplateCache`     | Token-bucket via Lua script; dedupe via `SETNX`+TTL; `TemplateCache` is a read-through write-through decorator wrapping the MongoDB repo (key `notif:tmpl:<uuid>`, configurable TTL). All three share a single `CircuitBreaker` — see §9.6. |
 | `infrastructure/rabbitmq/`          | `EventPublisher`                              | Topology declared by `Setup(channels)` — one work + retry + dead queue per channel; retries use the dead-letter-with-TTL pattern. Wire format uses an explicit `publishedNotification` struct so domain stays stable. |
 | `infrastructure/provider/mock/`     | `NotificationProvider`                        | Logs every send; an injected `failureRate` exercises the retry branch in demos.                                                                                                                    |
 | `infrastructure/provider/{apns,fcm,twilio,sendgrid}/` | `NotificationProvider`        | Real provider skeletons with full request/response shape and transient/terminal error mapping.                                                                                                     |
@@ -309,7 +309,7 @@ Unique index: `(name, channel, locale, version)`.
 
 ## 7. Queue Topology (RabbitMQ)
 
-Provisioned by `adapter/outbound/rabbitmq/topology.go::Setup`:
+Provisioned by `infrastructure/rabbitmq/topology.go::Setup`:
 
 ```
 exchange "notifications" (topic, durable)
@@ -365,7 +365,7 @@ Clients are configured via `APP_CLIENTS=key1:secret1,key2:secret2,...`.
 ### 8.2 Error envelope
 
 Every error response is `{"code":"...","message":"..."}`. Mapping
-(`internal/adapter/inbound/httpapi/handlers.go::mapDomainError`):
+(`cmd/api/http/handles/error.go::mapDomainError`):
 
 | Sentinel                              | Status |
 | ------------------------------------- | ------ |
@@ -420,6 +420,34 @@ Workers translate provider errors into one of three outcomes:
 in-process by template id; we don't currently invalidate the cache on
 update — version bumps are expected to use a new id, which the seed migration
 demonstrates.
+
+### 9.6 Redis Circuit Breaker
+
+All three Redis-backed components (`RateLimiter`, `Deduper`, `TemplateCache`) share a single `CircuitBreaker` instance created in `cmd/api/main.go`. The breaker uses a three-state machine:
+
+```
+Closed ── N consecutive errors ──► Open ── timeout elapsed ──► Half-Open
+  ▲                                                                  │
+  └──────────────── probe success ──────────────────────────────────┘
+                    probe failure ──────────────────────► Open (immediately)
+```
+
+| Parameter     | Default | Env override (planned) |
+| ------------- | ------- | ---------------------- |
+| threshold     | 5 consecutive Redis errors | — |
+| open timeout  | 30 s    | — |
+
+**Fallback behaviours when open:**
+
+| Component      | Fallback                                                                    |
+| -------------- | --------------------------------------------------------------------------- |
+| `RateLimiter`  | Fail-open: `Allow` returns `(true, nil)` — no request blocked               |
+| `Deduper`      | Fail-open: `Claim` returns `(true, nil)` — DB unique index is the backstop  |
+| `TemplateCache`| Bypass Redis: `Get`/`Create` go directly to MongoDB                         |
+
+The same fail-open behaviour applies when a Redis error is returned while the circuit is still closed — the error is absorbed, the failure counter is incremented, and the request proceeds normally. Only `redis.Nil` (key not found) and `context.Canceled` are excluded from the failure count; both are normal operating conditions, not infrastructure signals.
+
+Implementation: `infrastructure/redis/circuit_breaker.go`.
 
 ### 9.5 Notification settings (opt-out)
 
@@ -569,4 +597,4 @@ Run unit tests with `go test -race -count=1 ./...`. Integration tests assume
 
 ---
 
-*Last reviewed: 2026-05-22 — MongoDB template migration: templates moved from Postgres to MongoDB with MediaURLs support; Redis TemplateCache L2 added.*
+*Last reviewed: 2026-05-23 — Redis circuit breaker added: shared CircuitBreaker across RateLimiter, Deduper, and TemplateCache with fail-open fallbacks; see §9.6.*

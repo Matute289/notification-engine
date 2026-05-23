@@ -82,11 +82,15 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("mongodb templates: %w", err)
 	}
+	// Shared circuit breaker: when Redis is unhealthy all three Redis-backed
+	// components (rate limiter, deduper, template cache) fail open together.
+	redisCB := redisinfra.NewCircuitBreaker(0, 0) // defaults: threshold=5, openTimeout=30s
+
 	// Redis L2 cache in front of MongoDB; the renderer adds an in-process L1.
-	templatesRepo := redisinfra.NewTemplateCache(mongoTemplatesRepo, rdb, cfg.TemplateCacheTTL)
+	templatesRepo := redisinfra.NewTemplateCache(mongoTemplatesRepo, rdb, cfg.TemplateCacheTTL, redisCB)
 	publisher := rabbitmq.NewPublisher(mq)
-	limiter := redisinfra.NewRateLimiter(rdb)
-	deduper := redisinfra.NewDeduper(rdb)
+	limiter := redisinfra.NewRateLimiter(rdb, redisCB)
+	deduper := redisinfra.NewDeduper(rdb, redisCB)
 	renderer := rendering.New(templatesRepo)
 	m := metrics.NewPrometheusMetrics()
 

@@ -22,7 +22,7 @@ func newRedis(t *testing.T) (*goredis.Client, *miniredis.Miniredis) {
 
 func TestRateLimiter_BurstUpToCapacity(t *testing.T) {
 	c, _ := newRedis(t)
-	rl := NewRateLimiter(c)
+	rl := NewRateLimiter(c, nil)
 	for i := 0; i < 5; i++ {
 		ok, err := rl.Allow(context.Background(), "k", 5, time.Minute)
 		require.NoError(t, err)
@@ -35,7 +35,7 @@ func TestRateLimiter_BurstUpToCapacity(t *testing.T) {
 
 func TestRateLimiter_RefillsOverTime(t *testing.T) {
 	c, mr := newRedis(t)
-	rl := NewRateLimiter(c)
+	rl := NewRateLimiter(c, nil)
 	start := time.Unix(1700000000, 0)
 	mr.SetTime(start)
 
@@ -57,7 +57,7 @@ func TestRateLimiter_RefillsOverTime(t *testing.T) {
 
 func TestRateLimiter_KeysAreIndependent(t *testing.T) {
 	c, _ := newRedis(t)
-	rl := NewRateLimiter(c)
+	rl := NewRateLimiter(c, nil)
 	_, _ = rl.Allow(context.Background(), "a", 1, time.Minute)
 	ok, err := rl.Allow(context.Background(), "b", 1, time.Minute)
 	require.NoError(t, err)
@@ -66,7 +66,7 @@ func TestRateLimiter_KeysAreIndependent(t *testing.T) {
 
 func TestRateLimiter_NoLimit(t *testing.T) {
 	c, _ := newRedis(t)
-	rl := NewRateLimiter(c)
+	rl := NewRateLimiter(c, nil)
 	for i := 0; i < 100; i++ {
 		ok, err := rl.Allow(context.Background(), "k", 0, time.Minute)
 		require.NoError(t, err)
@@ -76,7 +76,7 @@ func TestRateLimiter_NoLimit(t *testing.T) {
 
 func TestDeduper_FirstClaimWins(t *testing.T) {
 	c, _ := newRedis(t)
-	d := NewDeduper(c)
+	d := NewDeduper(c, nil)
 	first, _ := d.Claim(context.Background(), "evt-42", time.Minute)
 	require.True(t, first)
 	second, _ := d.Claim(context.Background(), "evt-42", time.Minute)
@@ -85,7 +85,7 @@ func TestDeduper_FirstClaimWins(t *testing.T) {
 
 func TestDeduper_TTLReleasesClaim(t *testing.T) {
 	c, mr := newRedis(t)
-	d := NewDeduper(c)
+	d := NewDeduper(c, nil)
 	_, _ = d.Claim(context.Background(), "evt-x", time.Second)
 	mr.FastForward(2 * time.Second)
 	again, err := d.Claim(context.Background(), "evt-x", time.Second)
@@ -127,7 +127,7 @@ func TestTemplateCache_MissPopulatesCache(t *testing.T) {
 	id := uuid.New()
 	stub.tpls[id] = seedTemplate(id)
 
-	cache := NewTemplateCache(stub, c, time.Minute)
+	cache := NewTemplateCache(stub, c, time.Minute, nil)
 
 	// First call: cache miss, should hit the underlying repo.
 	got, err := cache.Get(context.Background(), id)
@@ -148,7 +148,7 @@ func TestTemplateCache_CreateWritesToCache(t *testing.T) {
 	id := uuid.New()
 	tmpl := seedTemplate(id)
 
-	cache := NewTemplateCache(stub, c, time.Minute)
+	cache := NewTemplateCache(stub, c, time.Minute, nil)
 
 	require.NoError(t, cache.Create(context.Background(), tmpl))
 	require.Equal(t, 1, stub.calls)
@@ -166,7 +166,7 @@ func TestTemplateCache_TTLEviction(t *testing.T) {
 	id := uuid.New()
 	stub.tpls[id] = seedTemplate(id)
 
-	cache := NewTemplateCache(stub, c, time.Second)
+	cache := NewTemplateCache(stub, c, time.Second, nil)
 
 	_, _ = cache.Get(context.Background(), id) // populate cache
 	mr.FastForward(2 * time.Second)            // expire the entry

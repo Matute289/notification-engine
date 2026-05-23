@@ -18,9 +18,13 @@ import (
 // The bucket capacity equals the limit (so an idle key can absorb a burst up
 // to limit), and tokens refill at rate = limit/window per second. Each Allow
 // consumes 1 token. Returns false if there isn't a full token available.
+//
+// When a CircuitBreaker is configured and Redis is unhealthy, Allow fails open
+// (returns true) so notifications are never blocked by a Redis outage.
 type RateLimiter struct {
 	c      *redis.Client
 	script *redis.Script
+	cb     *CircuitBreaker
 }
 
 // rateLimitScript implements the bucket math:
@@ -61,10 +65,14 @@ redis.call('PEXPIRE', key, ttlMs)
 return allowed
 `
 
-func NewRateLimiter(c *redis.Client) *RateLimiter {
+// NewRateLimiter creates a RateLimiter. Pass a non-nil cb to enable circuit
+// breaker protection: on Redis errors the limiter fails open rather than
+// surfacing the error to callers.
+func NewRateLimiter(c *redis.Client, cb *CircuitBreaker) *RateLimiter {
 	return &RateLimiter{
 		c:      c,
 		script: redis.NewScript(rateLimitScript),
+		cb:     cb,
 	}
 }
 
@@ -74,9 +82,16 @@ var _ port.RateLimiter = (*RateLimiter)(nil)
 // refill rate is limit/window per second. window also doubles as the lower
 // bound for the bucket key TTL (we keep it for 2x window so brief idle
 // periods don't lose accumulated tokens).
+//
+// When the circuit breaker is open, or when a Redis error occurs with a
+// circuit breaker configured, Allow fails open (returns true, nil) so a
+// Redis outage never blocks notification submission.
 func (r *RateLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {
 	if limit <= 0 || window <= 0 {
 		return true, nil
+	}
+	if r.cb != nil && !r.cb.Allow() {
+		return true, nil // circuit open → fail-open
 	}
 	rate := float64(limit) / window.Seconds()
 	ttlMs := (2 * window).Milliseconds()
@@ -84,7 +99,14 @@ func (r *RateLimiter) Allow(ctx context.Context, key string, limit int, window t
 		limit, fmt.Sprintf("%f", rate), ttlMs,
 	).Int()
 	if err != nil {
+		if r.cb != nil && isRedisError(err) {
+			r.cb.RecordFailure()
+			return true, nil // fail-open; don't surface the infrastructure error
+		}
 		return false, fmt.Errorf("ratelimit script: %w", err)
+	}
+	if r.cb != nil {
+		r.cb.RecordSuccess()
 	}
 	return res == 1, nil
 }

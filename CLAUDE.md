@@ -42,7 +42,7 @@ NotificationEngine/
   infrastructure/
     postgres/             ← NotificationRepository, UserRepository, OutboxRepository
     mongodb/              ← TemplateRepository (templates + media URLs)
-    redis/                ← RateLimiter, Deduper, TemplateCache (L2 decorator)
+    redis/                ← RateLimiter, Deduper, TemplateCache (L2 decorator), CircuitBreaker
     rabbitmq/             ← EventPublisher + topology setup
     rendering/            ← TemplateRenderer impl (in-process L1 cache)
     provider/
