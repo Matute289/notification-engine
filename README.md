@@ -13,8 +13,8 @@ The codebase is organised in **hexagonal / ports-and-adapters** style. Domain lo
 ## Quick start
 
 ```bash
-# Bring up the whole stack: postgres + redis + rabbitmq + prometheus + migrate
-# + api + 4 workers + janitor + outbox-relay
+# Bring up the whole stack: postgres, mongo, redis, rabbitmq, prometheus,
+# migrations, api, 4 workers, janitor, and outbox-relay
 make up
 
 # Tail logs (Ctrl-C to detach; containers keep running)
@@ -29,19 +29,25 @@ make down
 
 | Endpoint                          | Purpose                                |
 | --------------------------------- | -------------------------------------- |
-| `http://localhost:8080`           | Notification API                       |
+| `http://localhost:8080`           | Notification API (auth-protected)      |
 | `http://localhost:8080/metrics`   | Prometheus metrics from the API        |
+| `http://localhost:9090`           | Per-worker admin metrics (`:9090`)     |
 | `http://localhost:15672`          | RabbitMQ management UI (`notif`/`notif`) |
+| `http://localhost:27017`          | MongoDB (templates)                    |
 | `http://localhost:9091`           | Prometheus UI (scrapes API + workers)  |
 
 ---
 
 ## What it does
 
-- Accepts notification requests at `POST /v1/notifications`, signed with HMAC-SHA256.
-- Validates input, checks per-(user, channel) opt-in and rate-limit, dedupes by caller-supplied `event_id`, hydrates the recipient from the user record, renders the template, persists, and publishes to a per-channel queue.
-- A worker per channel pulls from its queue, calls the provider, marks the notification `sent`, retries with exponential backoff on transient failures, and dead-letters terminal failures.
+- **API** accepts notification requests at `POST /v1/notifications`, signed with HMAC-SHA256.
+  - Validates input, checks per-(user, channel) opt-in and rate-limit (token bucket in Redis).
+  - Dedupes by caller-supplied `event_id` (Redis `SETNX` + DB unique index).
+  - Hydrates the recipient from the user record, renders the template from MongoDB, and persists a `notification_log` row plus a matching `notification_outbox` row in one DB transaction.
+- **Outbox relay** (separate process) periodically drains pending `notification_outbox` rows with `SELECT … FOR UPDATE SKIP LOCKED` and publishes them to a per-channel RabbitMQ queue.
+- **Worker per channel** pulls from its queue, calls the provider, marks the notification `sent`, retries with exponential backoff (30s → 2m → 10m → 1h → 6h) on transient failures, and dead-letters terminal failures.
 - Exposes Prometheus metrics, structured JSON logs, and `/healthz` / `/readyz` probes.
+- **Resilience**: Redis circuit breaker (fail-open on latency/outage) protects rate limiter, deduper, and template cache. Janitor rescues notifications stuck in `in_flight` state.
 
 ```
 internal services ──► HTTP API ──► message queue ──► per-channel worker ──► provider ──► user
@@ -67,13 +73,20 @@ See [`architecture-specifications.md`](./architecture-specifications.md) for the
 make up
 ```
 
-This builds the api/worker/migrate images, brings up Postgres, Redis, and RabbitMQ, runs goose migrations against an empty database, then starts the API and the four workers (`worker-push-ios`, `worker-push-android`, `worker-sms`, `worker-email`).
+This builds the api/worker/migrate/janitor/outbox-relay images, brings up Postgres, MongoDB, Redis, and RabbitMQ, runs goose migrations against an empty database, and starts:
+
+- **api** (`:8080`) — HTTP service with HMAC auth
+- **4 workers** (`worker-push-ios`, `worker-push-android`, `worker-sms`, `worker-email`) — per-channel message consumers with admin listeners on `:9090`
+- **janitor** — rescues notifications stuck in `in_flight` after worker crashes
+- **outbox-relay** — drains `notification_outbox` to RabbitMQ
+- **prometheus** (`:9091`) — scrapes metrics from API and workers
+- **RabbitMQ management UI** (`:15672`, user `notif`/`notif`)
 
 The migration also seeds:
 
 - demo user `id=1` with email `demo@example.com` and devices on push iOS / Android
 - opt-in for all four channels
-- three templates:
+- three templates in MongoDB:
   - `11111111-...` `welcome` (email)
   - `22222222-...` `order_shipped` (sms)
   - `33333333-...` `game_request` (push iOS)
@@ -86,11 +99,22 @@ Everything is environment-driven. Defaults live in `.env.example`; the compose s
 | ------------------------- | ------------------------------------------------------ | ------------------- |
 | `APP_CLIENTS`             | `key:secret,key:secret` for HMAC clients              | `demo-app:demo-...` |
 | `PROVIDER_MODE`           | `mock` or `real`                                      | `mock`              |
+| `POSTGRES_DSN`            | Postgres connection string (required)                 |                     |
+| `REDIS_ADDR`              | Redis address (required)                             |                     |
+| `RABBITMQ_URL`            | RabbitMQ AMQP URL (required)                         |                     |
+| `MONGODB_URI`             | MongoDB connection string (required)                 |                     |
+| `MONGODB_DATABASE`        | MongoDB database name                                 | `notification_engine` |
+| `TEMPLATE_CACHE_TTL`      | L2 Redis cache TTL for templates                     | `5m`                |
 | `MAX_RETRIES`             | Retry hops before dead-lettering                      | `5`                 |
-| `RATELIMIT_*_PER_HOUR`    | Per-channel hourly cap per user                       | 20 / 5 / 10         |
+| `RATELIMIT_*_PER_HOUR`    | Per-channel hourly cap per user (token bucket)        | 20 / 5 / 10         |
 | `WORKER_CHANNEL`          | `push_ios` `push_android` `sms` `email`               | `push_ios`          |
+| `WORKER_CONCURRENCY`      | Prefetch + goroutine pool size per worker            | `8`                 |
 | `DEDUPE_TTL`              | Idempotency window in Redis                           | `24h`               |
 | `HMAC_SKEW`               | Tolerance on signed timestamps                        | `5m`                |
+| `APP_KEY_RATE_LIMIT`      | Global QPS cap per app key                           |                     |
+| `JANITOR_INTERVAL`        | How often janitor runs (e.g., `30s`, `5m`)           | `5m`                |
+| `JANITOR_STUCK_THRESHOLD` | Age before a notification is considered stuck         | `1h`                |
+| `RELAY_INTERVAL`          | How often outbox relay runs                          | `2s`                |
 
 See `.env.example` for the full list.
 
@@ -109,14 +133,17 @@ go test -race -count=1 ./...
 What gets exercised:
 
 - **Domain** (`internal/domain/`) — channel validity, recipient/email/phone/event-id parsing, full state-machine of `Notification` (happy path, retry path, illegal-transition rejection).
-- **Use cases** (`internal/app/usecase/`) — `SubmitNotification` (×7 scenarios) and `ProcessNotification` (×4 scenarios) run against in-memory port fakes (`fakes_test.go`). No DB, no queue, no Redis.
-- **Redis adapter** (`internal/adapter/outbound/redis/`) — RateLimiter and Deduper covered with `miniredis`.
+- **Use cases** (`internal/service/`) — `SubmitNotification` (×7 scenarios) and `ProcessNotification` (×4 scenarios) run against in-memory port fakes. No DB, no queue, no Redis.
+- **Redis adapters** (`infrastructure/redis/`) — RateLimiter, Deduper, TemplateCache, and CircuitBreaker covered with `miniredis`. Circuit breaker state machine and fail-open fallbacks tested.
+- **HTTP handlers** (`cmd/api/http/handlers/`) — full endpoint tests via `httptest`, domain-error-to-HTTP-status mapping, request parsing.
 - **HMAC** (`internal/platform/auth/`) — round-trip, bad secret, stale timestamp, unknown key.
+- **Providers** (`infrastructure/provider/{apns,fcm,twilio,sendgrid}/`) — transient vs terminal error classification, request/response shape.
+- **Template rendering** (`infrastructure/rendering/`) — template compilation and per-entry TTL cache.
 
 Run a single test:
 
 ```bash
-go test -race -run TestSubmit_HappyPath ./internal/app/usecase/...
+go test -race -run TestSubmit_HappyPath ./internal/service/...
 ```
 
 ### Integration tests
@@ -193,28 +220,50 @@ The signature covers `timestamp \n method \n path \n raw-body`. See `internal/pl
 
 ```
 cmd/
-  api/                       # HTTP API service (composition root)
-  worker/                    # per-channel worker (composition root)
-  janitor/                   # rescues notifications stuck in_flight
-  outbox-relay/              # drains notification_outbox to RabbitMQ
+  api/
+    http/                      # HTTP driving adapter (package httpapi)
+      router.go
+      handlers/                # one file per endpoint + shared fakes
+      dto/                     # one file per exported DTO type
+    main.go                    # composition root
+  worker/
+    consumer/                  # AMQP driving adapter (package consumer)
+      consumer.go
+    main.go                    # composition root
+  janitor/main.go              # rescues notifications stuck in_flight
+  outbox-relay/main.go         # drains notification_outbox to RabbitMQ
+
 internal/
-  domain/                    # entities, value objects, state machine, sentinel errors
-  app/
-    port/                    # interfaces — outbound adapters implement these
-    usecase/                 # one struct per use case (orchestration only)
-  adapter/
-    inbound/{httpapi,worker} # HTTP + AMQP delivery into use cases
-    outbound/                # postgres, redis, rabbitmq, rendering, observability,
-                             # provider/{mock,apns,fcm,twilio,sendgrid}
-  platform/                  # HMAC, env config, slog logger
+  domain/                      # entities, value objects, state machine, sentinel errors
+  port/                        # interfaces — what services need from infrastructure
+  service/                     # one struct + Execute() per use case
+  platform/
+    auth/                      # HMAC verifier
+    config/                    # env-based config loader
+
+infrastructure/                # driven adapters at repo root
+  postgres/                    # NotificationRepository, UserRepository, OutboxRepository
+  mongodb/                     # TemplateRepository (templates + media URLs)
+  redis/                       # RateLimiter, Deduper, TemplateCache, CircuitBreaker
+  rabbitmq/                    # EventPublisher + topology setup
+  rendering/                   # TemplateRenderer impl (text/html with L1 cache)
+  provider/
+    mock/                      # NotificationProvider (logging-only, used locally)
+    apns/fcm/twilio/sendgrid/  # real provider skeletons
+
+middleware/                    # HTTP middleware (RequestID, Recoverer, AccessLog, HMACAuth, AppKeyRateLimit)
+observability/
+  logger/logger.go             # slog logger (package logger)
+  metrics/metrics.go           # Prometheus MetricsRecorder (package metrics)
+
 deploy/
-  docker/                    # Dockerfile.{api,worker,migrate,janitor,outbox-relay}
-  compose/                   # docker-compose.yml + prometheus.yml
-migrations/                  # goose .sql files (init + seed + outbox)
-test/integration/            # end-to-end tests behind the `integration` build tag
-scripts/                     # sign-and-submit.sh
-configs/                     # config.example.yaml (informational)
-architecture-specifications.md
+  docker/                      # Dockerfile.{api,worker,migrate,janitor,outbox-relay}
+  compose/                     # docker-compose.yml + prometheus.yml
+migrations/                    # goose .sql files (init + seed + outbox + template_to_mongodb)
+test/integration/              # end-to-end tests behind the `integration` build tag
+scripts/                       # sign-and-submit.sh
+.env.example                   # default env configuration
+architecture-specifications.md # full design reference
 README.md (this file)
 ```
 
@@ -226,13 +275,14 @@ README.md (this file)
 | --------------------- | ------------------------------------------------------------------------ |
 | `make tidy`           | `go mod tidy`                                                            |
 | `make build`          | `go build ./...`                                                         |
-| `make test`           | Unit tests with `-race`                                                  |
-| `make test-integration` | Integration tests against the compose stack                            |
 | `make lint`           | `go vet ./...`                                                           |
-| `make up` / `down`    | Start / tear down the docker-compose stack                               |
-| `make logs`           | Follow combined container logs                                           |
+| `make test`           | Unit tests with `-race -count=1` (no I/O, ~fast)                       |
+| `make test-integration` | Integration tests against the compose stack (assumes `make up` running) |
+| `make up`             | Start full docker-compose stack (postgres, mongo, redis, rabbitmq, api, workers, janitor, outbox-relay, prometheus, migrations) |
+| `make down`           | Tear down stack and remove volumes                                       |
+| `make logs`           | Follow combined container logs (Ctrl-C to detach)                       |
 | `make migrate`        | Re-run goose migrations against the running stack                        |
-| `make curl-submit`    | Sign + POST a sample notification via curl                               |
+| `make curl-submit`    | Sign + POST a sample notification (uses demo credentials)                |
 
 ---
 
@@ -240,19 +290,45 @@ README.md (this file)
 
 Switching to real third-party delivery is a config flip plus credentials. Set `PROVIDER_MODE=real` and supply the env vars below; `cmd/worker/main.go::buildProvider` selects the right adapter for `WORKER_CHANNEL`.
 
-| Channel        | Adapter                                            | Required env                                                                  |
-| -------------- | -------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `push_ios`     | `internal/adapter/outbound/provider/apns`          | `APNS_BUNDLE_ID`, `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_AUTH_KEY`              |
-| `push_android` | `internal/adapter/outbound/provider/fcm`           | `FCM_PROJECT_ID`, `FCM_CREDENTIALS_JSON` (path to service-account JSON)       |
-| `sms`          | `internal/adapter/outbound/provider/twilio`        | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`               |
-| `email`        | `internal/adapter/outbound/provider/sendgrid`      | `SENDGRID_API_KEY`, `SENDGRID_FROM_EMAIL`, `SENDGRID_FROM_NAME` (optional)    |
+| Channel        | Adapter                                  | Required env                                                                  |
+| -------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
+| `push_ios`     | `infrastructure/provider/apns`           | `APNS_BUNDLE_ID`, `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_AUTH_KEY`              |
+| `push_android` | `infrastructure/provider/fcm`            | `FCM_PROJECT_ID`, `FCM_CREDENTIALS_JSON` (path to service-account JSON)       |
+| `sms`          | `infrastructure/provider/twilio`         | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`               |
+| `email`        | `infrastructure/provider/sendgrid`       | `SENDGRID_API_KEY`, `SENDGRID_FROM_EMAIL`, `SENDGRID_FROM_NAME` (optional)    |
 
-The HTTP shape of each adapter is locked in by httptest-backed unit tests (transient vs terminal mapping included). The two pieces still left for a real deployment are pluggable:
+The HTTP shape of each adapter is locked in by httptest-backed unit tests (transient vs terminal error mapping included). Each adapter is unit-tested with httptest and implements the `port.NotificationProvider` interface.
 
-- **APNs JWT signer**: `cmd/worker/main.go::buildAPNSAuth` returns an `apns.Authenticator` stub today. Slot in an ES256 signer (e.g. `golang-jwt/jwt`) over the `.p8` key with a 50-minute rotation.
-- **FCM OAuth2 token source**: `cmd/worker/main.go::buildFCMTokenSource` is the equivalent stub for FCM. Wire `golang.org/x/oauth2/google` against the `https://www.googleapis.com/auth/firebase.messaging` scope.
+The two auth pieces that still need real wiring for production are:
 
-Each adapter implements `port.NotificationProvider.Send(ctx, *domain.Notification) error`. Returning `port.ErrTransient` puts the message into the retry queue; any other non-nil error dead-letters it immediately.
+- **APNs JWT signer** (`cmd/worker/main.go::buildAPNSAuth`): Supply an ES256 signer (e.g. `golang-jwt/jwt`) over the `.p8` key with 50-minute token rotation.
+- **FCM OAuth2 token source** (`cmd/worker/main.go::buildFCMTokenSource`): Wire `golang.org/x/oauth2/google` against the `https://www.googleapis.com/auth/firebase.messaging` scope.
+
+Each adapter implements `port.NotificationProvider.Send(ctx, *domain.Notification) error`:
+- Return `port.ErrTransient` to trigger retry (exponential backoff via RabbitMQ DLQ).
+- Return any other non-nil error to skip retries and dead-letter immediately.
+- Return `nil` to mark the notification `sent`.
+
+See `architecture-specifications.md` §13.1 for implementation notes.
+
+---
+
+## Architecture
+
+This codebase follows **hexagonal (ports-and-adapters)** architecture:
+
+- **Domain** (`internal/domain/`) — zero infrastructure dependencies. Entities, value objects, state machine, sentinel errors.
+- **Ports** (`internal/port/`) — small interfaces describing what services need (repositories, queues, providers, caches, etc.).
+- **Services** (`internal/service/`) — orchestration logic. One struct per use case; no infrastructure knowledge.
+- **Driving adapters** — translate HTTP/AMQP into service input (`cmd/api/http/`, `cmd/worker/consumer/`).
+- **Driven adapters** — concrete implementations of ports (`infrastructure/{postgres,mongodb,redis,rabbitmq,provider,rendering}/`).
+
+This architecture ensures:
+- Business logic is **testable without containers** (use-case tests run against in-memory port fakes).
+- **Technology choices are pluggable** — swap Postgres for MySQL, RabbitMQ for Kafka, Prometheus for OTel without touching domain or services.
+- **Clear dependency direction** — `domain ← port ← service ← infrastructure ← cmd/*/main.go`.
+
+For a detailed breakdown of layers, ports, aggregates, and the state machine, see [`architecture-specifications.md`](./architecture-specifications.md).
 
 ---
 
