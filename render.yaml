@@ -8,7 +8,7 @@
 #   1. Create a CloudAMQP instance → copy the AMQP URL (amqps://...)
 #   2. Create a MongoDB Atlas cluster → copy the connection string (mongodb+srv://...)
 #   3. Render dashboard → New → Blueprint → select this repo
-#   4. Fill in the sync:false secrets → Apply
+#   4. Fill in the sync:false secrets in the form → Apply
 
 databases:
   - name: notification-postgres
@@ -17,32 +17,39 @@ databases:
     plan: free           # upgrade to "starter" or "standard" for production
 
 envVarGroups:
+  # Shared by API + all workers. Set RABBITMQ_URL and MONGODB_URI here once.
   - name: worker-shared
     envVars:
-      # External services — set these after creating CloudAMQP + Atlas
       - key: RABBITMQ_URL
         sync: false       # amqps://user:pass@host/vhost  (from CloudAMQP)
       - key: MONGODB_URI
         sync: false       # mongodb+srv://user:pass@cluster/  (from Atlas)
       - key: MONGODB_DATABASE
         value: notification_engine
-      # Worker behaviour
       - key: WORKER_CONCURRENCY
         value: "8"
       - key: MAX_RETRIES
         value: "5"
+      - key: DEDUPE_TTL
+        value: 24h
       - key: PROVIDER_MODE
         value: mock       # change to "real" for production
       - key: LOG_LEVEL
         value: info
-      # Janitor
+      - key: RATELIMIT_WINDOW
+        value: 1h
+      - key: RATELIMIT_PUSH_PER_HOUR
+        value: "20"
+      - key: RATELIMIT_SMS_PER_HOUR
+        value: "5"
+      - key: RATELIMIT_EMAIL_PER_HOUR
+        value: "10"
       - key: JANITOR_INTERVAL
         value: 30s
       - key: JANITOR_STUCK_THRESHOLD
         value: 5m
       - key: JANITOR_BATCH_SIZE
         value: "100"
-      # Outbox relay
       - key: RELAY_INTERVAL
         value: 500ms
       - key: RELAY_BATCH_SIZE
@@ -63,10 +70,9 @@ services:
     plan: starter
     healthCheckPath: /healthz
     envVars:
+      - fromGroup: worker-shared   # pulls RABBITMQ_URL, MONGODB_URI, and shared config
       - key: HTTP_ADDR
         value: :8080
-      - key: LOG_LEVEL
-        value: info
       - key: POSTGRES_DSN
         fromDatabase:
           name: notification-postgres
@@ -75,52 +81,22 @@ services:
         fromService:
           name: notification-redis
           type: redis
-          property: host
-      - key: RABBITMQ_URL
-        sync: false
-      - key: MONGODB_URI
-        sync: false
-      - key: MONGODB_DATABASE
-        value: notification_engine
+          property: connectionString   # redis://host:port — parsed by Connect()
       - key: TEMPLATE_CACHE_TTL
         value: 5m
-      - key: PROVIDER_MODE
-        value: mock
-      - key: MAX_RETRIES
-        value: "5"
-      - key: DEDUPE_TTL
-        value: 24h
-      - key: RATELIMIT_WINDOW
-        value: 1h
-      - key: RATELIMIT_PUSH_PER_HOUR
-        value: "20"
-      - key: RATELIMIT_SMS_PER_HOUR
-        value: "5"
-      - key: RATELIMIT_EMAIL_PER_HOUR
-        value: "10"
       - key: APP_KEY_RATE_LIMIT
         value: "0"
       - key: APP_KEY_RATE_WINDOW
         value: 1s
       - key: HMAC_SKEW
         value: 5m
-      - key: JANITOR_INTERVAL
-        value: 30s
-      - key: JANITOR_STUCK_THRESHOLD
-        value: 5m
-      - key: JANITOR_BATCH_SIZE
-        value: "100"
-      - key: RELAY_INTERVAL
-        value: 500ms
-      - key: RELAY_BATCH_SIZE
-        value: "100"
       # ── Auth ──
       - key: CLERK_ISSUER
         sync: false       # e.g. https://<slug>.clerk.accounts.dev
       - key: CLERK_AUTHORIZED_PARTIES
         sync: false       # comma-separated allowed origins (can be left empty)
       - key: APP_CLIENTS
-        sync: false       # key1:secret1,key2:secret2 (optional if Clerk is set)
+        sync: false       # key1:secret1,... (optional when CLERK_ISSUER is set)
 
   # ─── Per-channel workers ───────────────────────────────────────────
   - type: worker
@@ -138,7 +114,7 @@ services:
         fromService:
           name: notification-redis
           type: redis
-          property: host
+          property: connectionString
       - key: WORKER_CHANNEL
         value: push_ios
 
@@ -157,7 +133,7 @@ services:
         fromService:
           name: notification-redis
           type: redis
-          property: host
+          property: connectionString
       - key: WORKER_CHANNEL
         value: push_android
 
@@ -176,7 +152,7 @@ services:
         fromService:
           name: notification-redis
           type: redis
-          property: host
+          property: connectionString
       - key: WORKER_CHANNEL
         value: sms
 
@@ -195,7 +171,7 @@ services:
         fromService:
           name: notification-redis
           type: redis
-          property: host
+          property: connectionString
       - key: WORKER_CHANNEL
         value: email
 
@@ -215,7 +191,7 @@ services:
         fromService:
           name: notification-redis
           type: redis
-          property: host
+          property: connectionString
 
   # ─── Outbox relay ─────────────────────────────────────────────────
   - type: worker
@@ -233,4 +209,4 @@ services:
         fromService:
           name: notification-redis
           type: redis
-          property: host
+          property: connectionString
