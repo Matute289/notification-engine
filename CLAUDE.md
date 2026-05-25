@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Go notification engine implementing the design from chapter 10 of *System Design Interview Vol. 1* (`Notification_System.pdf` in this repo). API service + per-channel workers, backed by Postgres, Redis, and RabbitMQ, all runnable via docker-compose. Channels: iOS push, Android push, SMS, email. Locally everything is wired to a **mock provider** so the stack runs without third-party credentials.
+A Go notification engine implementing the design from chapter 10 of *System Design Interview Vol. 1* (`Notification_System.pdf` in this repo). API service + per-channel workers, all runnable via docker-compose. Channels: iOS push, Android push, SMS, email. Locally everything runs with **mock providers** so the stack works without third-party credentials.
+
+**Infrastructure-agnostic:** Works with any Postgres, Redis, RabbitMQ, or MongoDB provider. Supports any JWT issuer or HMAC-only auth. Deploys to Render, AWS, GCP, Azure, Kubernetes, VPS, or on-premises — just wire env vars.
 
 Read `CLAUDE_CONTEXT.md` first — it captures the working design, the layer rules, file index, and outstanding follow-ups. The end-user-facing design lives in `architecture-specifications.md`.
 
@@ -35,7 +37,7 @@ NotificationEngine/
       main.go             ← composition root for channel worker
     janitor/main.go       ← composition root for stuck-notification janitor
     outbox-relay/main.go  ← composition root for outbox relay
-  middleware/             ← HTTP middleware (RequestID, Recoverer, AccessLog, HMACAuth, AppKeyRateLimit)
+  middleware/             ← HTTP middleware (RequestID, Recoverer, AccessLog, Authenticate, AppKeyRateLimit)
   observability/
     logger/logger.go      (package logger — slog NewLogger)
     metrics/metrics.go    (package metrics — Prometheus MetricsRecorder impl)
@@ -53,7 +55,7 @@ NotificationEngine/
     port/                 ← outbound port interfaces (what services need from infrastructure)
     service/              ← one struct + Execute() per use case (SubmitNotification, ProcessNotification, …)
     platform/
-      auth/               ← HMAC verifier
+      auth/               ← HMAC verifier + Clerk JWT verifier (ClerkVerifier)
       config/             ← env-based config loader
   migrations/             ← goose SQL migrations
   deploy/                 ← Dockerfiles + docker-compose
@@ -103,6 +105,30 @@ make test-integration
 # Issue a signed sample notification
 APP_KEY=demo-app APP_SECRET=demo-secret-please-change ./scripts/sign-and-submit.sh
 ```
+
+## Authentication architecture
+
+The API supports **two independent authentication mechanisms** (choose one, both, or neither):
+
+**1. JWT auth (user-facing — optional)**
+- `Authorization: Bearer <jwt>` header.
+- Verifier in `internal/platform/auth/clerk.go` uses `lestrrat-go/jwx/v2` to fetch + cache JWKS and verify RS256 locally.
+- Works with any OpenID provider (Clerk is an example, not a requirement).
+- Config: `CLERK_ISSUER` (issuer URL), `CLERK_AUTHORIZED_PARTIES` (optional claim validation).
+- Leave `CLERK_ISSUER` empty to disable JWT auth entirely.
+
+**2. HMAC-SHA256 auth (server-to-server — always available)**
+- `X-App-Key` + `X-App-Timestamp` + `X-App-Signature` headers.
+- Verifier in `internal/platform/auth/hmac.go`.
+- No external dependencies; cryptography is in-process.
+- Config: `APP_CLIENTS=key:secret,key:secret,...`.
+- Works in any environment (local, cloud, air-gapped).
+
+**Unified dispatch:** Middleware `Authenticate(clerk, hmac)` in `middleware/middleware.go` tries JWT first (if enabled), then HMAC (if enabled), then 401. Both mechanisms populate `Identity{Subject, Kind}` context (user vs service). At least one must be enabled (validated at startup).
+
+**Why two mechanisms?**
+- JWT → modern, stateless, delegated identity (users sign up outside your app)
+- HMAC → simple, self-contained, no external dependencies (internal services)
 
 ## Conventions
 

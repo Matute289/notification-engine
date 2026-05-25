@@ -2,15 +2,17 @@
 
 A Go service that delivers notifications to end users over four channels — **iOS push** (APNs), **Android push** (FCM), **SMS**, and **email** — via an asynchronous, queue-backed pipeline. Implements the design from chapter 10 of *System Design Interview Vol. 1* (`Notification_System.pdf` in this repo).
 
-The whole stack — Postgres, Redis, RabbitMQ, the API, and four per-channel workers — runs from a single `docker compose up`. A built-in **mock provider** lets the full pipeline be exercised without any third-party credentials.
+**Infrastructure-agnostic:** Works with any Postgres, Redis, RabbitMQ, and MongoDB providers. Supports any JWT issuer or HMAC-only auth. Deploy to Render, AWS, GCP, Azure, Kubernetes, VPS, or on-premises.
 
-The codebase is organised in **hexagonal / ports-and-adapters** style. Domain logic has zero infrastructure dependencies; technology choices live behind small interfaces (ports) that adapters implement.
+Locally everything runs from a single `docker compose up` with **mock providers**, so the full pipeline works without any third-party credentials.
+
+The codebase follows **hexagonal / ports-and-adapters** architecture. Domain logic has zero infrastructure dependencies; technology choices live behind small interfaces (ports) that adapters implement.
 
 > Full design reference: [`architecture-specifications.md`](./architecture-specifications.md)
 
 ---
 
-## Quick start
+## Quick start — local development
 
 ```bash
 # Bring up the whole stack: postgres, mongo, redis, rabbitmq, prometheus,
@@ -27,6 +29,45 @@ APP_KEY=demo-app APP_SECRET=demo-secret-please-change ./scripts/sign-and-submit.
 make down
 ```
 
+## Deploying to production
+
+The system is **infrastructure-agnostic** — you can deploy to any cloud provider or on-premises. A `render.yaml` Blueprint is provided as an example for **Render**, but the same Go binaries work anywhere.
+
+### Example: Deploying to Render
+
+The `render.yaml` Blueprint at the repo root shows one possible deployment stack (Render-managed Postgres + Redis, with external third-party services for RabbitMQ, MongoDB, and auth):
+
+1. **Set up external services** (pick your preferred providers — these are examples, not requirements):
+   - **Message queue:** RabbitMQ can run anywhere. Example: CloudAMQP (https://cloudamqp.com, free "Lemur" plan) or your own RabbitMQ instance.
+   - **Document store:** MongoDB can run anywhere. Example: MongoDB Atlas (https://mongodb.com/atlas, free M0 cluster) or self-hosted MongoDB.
+   - **Authentication** (optional): Clerk (https://clerk.dev) or any JWT issuer you control, or use HMAC-only mode (no Clerk).
+
+2. **Deploy via Render:**
+   - Render dashboard → New → Blueprint → select this repo
+   - Fill in the `sync:false` secrets in the form:
+     - `RABBITMQ_URL` (from your RabbitMQ provider)
+     - `MONGODB_URI` (from your MongoDB provider)
+     - `CLERK_ISSUER` (from your JWT provider, or leave empty for HMAC-only)
+     - `CLERK_AUTHORIZED_PARTIES` (comma-separated allowed origins, optional)
+     - `APP_CLIENTS` (for HMAC clients; optional if using Clerk JWT)
+   - Click Apply
+
+3. **Verify deployment:**
+   - Check that the `notification-api` web service is running on its public URL
+   - Check that all 6 background workers are running (status page shows 4 workers + janitor + outbox-relay)
+   - Note: Workers will show errors until you manually set `RABBITMQ_URL` and `MONGODB_URI` in Render dashboard → Environment Groups → `worker-shared`
+
+### Deploying elsewhere
+
+The same Docker images work on:
+- **AWS** (ECS, EC2, Elastic Beanstalk) + RDS Postgres + ElastiCache Redis + SQS or Kafka for queuing
+- **GCP** (Cloud Run, App Engine, GKE) + Cloud SQL + Memorystore + Pub/Sub
+- **Azure** (App Service, Container Instances, AKS) + Azure Database + Azure Cache + Service Bus
+- **Kubernetes** (any cluster) via Helm or kustomize
+- **VPS** (DigitalOcean, Linode, Vultr, etc.) with docker-compose
+
+Just wire the connection strings via environment variables — the code doesn't change.
+
 | Endpoint                          | Purpose                                |
 | --------------------------------- | -------------------------------------- |
 | `http://localhost:8080`           | Notification API (auth-protected)      |
@@ -40,14 +81,14 @@ make down
 
 ## What it does
 
-- **API** accepts notification requests at `POST /v1/notifications`, signed with HMAC-SHA256.
-  - Validates input, checks per-(user, channel) opt-in and rate-limit (token bucket in Redis).
-  - Dedupes by caller-supplied `event_id` (Redis `SETNX` + DB unique index).
-  - Hydrates the recipient from the user record, renders the template from MongoDB, and persists a `notification_log` row plus a matching `notification_outbox` row in one DB transaction.
-- **Outbox relay** (separate process) periodically drains pending `notification_outbox` rows with `SELECT … FOR UPDATE SKIP LOCKED` and publishes them to a per-channel RabbitMQ queue.
+- **API** accepts notification requests at `POST /v1/notifications`, authenticated via JWT or HMAC-SHA256.
+  - Validates input, checks per-(user, channel) opt-in and rate-limit (token bucket in cache).
+  - Dedupes by caller-supplied `event_id` (cache `SETNX` + DB unique index).
+  - Hydrates the recipient from the user record, renders the template from document store, and persists a `notification_log` row plus a matching `notification_outbox` row in one DB transaction.
+- **Outbox relay** (separate process) periodically drains pending `notification_outbox` rows with `SELECT … FOR UPDATE SKIP LOCKED` and publishes them to a per-channel message queue.
 - **Worker per channel** pulls from its queue, calls the provider, marks the notification `sent`, retries with exponential backoff (30s → 2m → 10m → 1h → 6h) on transient failures, and dead-letters terminal failures.
 - Exposes Prometheus metrics, structured JSON logs, and `/healthz` / `/readyz` probes.
-- **Resilience**: Redis circuit breaker (fail-open on latency/outage) protects rate limiter, deduper, and template cache. Janitor rescues notifications stuck in `in_flight` state.
+- **Resilience**: Circuit breaker (fail-open on latency/outage) protects rate limiter, deduper, and template cache. Janitor rescues notifications stuck in `in_flight` state.
 
 ```
 internal services ──► HTTP API ──► message queue ──► per-channel worker ──► provider ──► user
@@ -67,20 +108,23 @@ See [`architecture-specifications.md`](./architecture-specifications.md) for the
 - Go 1.26+ (only if you want to run tests on the host or compile outside Docker)
 - `make` and `openssl` (for the signed-submit demo script)
 
-### Start the stack
+### Start the stack (local development)
 
 ```bash
 make up
 ```
 
-This builds the api/worker/migrate/janitor/outbox-relay images, brings up Postgres, MongoDB, Redis, and RabbitMQ, runs goose migrations against an empty database, and starts:
+This builds all Docker images, brings up a complete local environment, runs goose migrations, and starts:
 
-- **api** (`:8080`) — HTTP service with HMAC auth
+- **api** (`:8080`) — HTTP service with JWT/HMAC auth
 - **4 workers** (`worker-push-ios`, `worker-push-android`, `worker-sms`, `worker-email`) — per-channel message consumers with admin listeners on `:9090`
 - **janitor** — rescues notifications stuck in `in_flight` after worker crashes
-- **outbox-relay** — drains `notification_outbox` to RabbitMQ
+- **outbox-relay** — drains `notification_outbox` to the message queue
 - **prometheus** (`:9091`) — scrapes metrics from API and workers
 - **RabbitMQ management UI** (`:15672`, user `notif`/`notif`)
+- **Postgres, Redis, RabbitMQ, MongoDB** — all containerized with default credentials
+
+(The same binaries run in production with your own infrastructure — see **Deploying to production** section.)
 
 The migration also seeds:
 
@@ -97,26 +141,89 @@ Everything is environment-driven. Defaults live in `.env.example`; the compose s
 
 | Variable                  | Purpose                                                | Default             |
 | ------------------------- | ------------------------------------------------------ | ------------------- |
-| `APP_CLIENTS`             | `key:secret,key:secret` for HMAC clients              | `demo-app:demo-...` |
+| **Authentication**        |                                                        |                     |
+| `CLERK_ISSUER`            | JWT issuer URL (Clerk, Auth0, Okta, or your own) — `https://<slug>.clerk.accounts.dev` | (optional) |
+| `CLERK_AUTHORIZED_PARTIES`| Comma-separated allowed origins for JWT `azp` claim | (optional) |
+| `APP_CLIENTS`             | `key:secret,key:secret` for HMAC (no external deps)  | `demo-app:demo-...` |
+| **Provider & Storage**    |                                                        |                     |
 | `PROVIDER_MODE`           | `mock` or `real`                                      | `mock`              |
 | `POSTGRES_DSN`            | Postgres connection string (required)                 |                     |
 | `REDIS_ADDR`              | Redis address (required)                             |                     |
 | `RABBITMQ_URL`            | RabbitMQ AMQP URL (required)                         |                     |
 | `MONGODB_URI`             | MongoDB connection string (required)                 |                     |
 | `MONGODB_DATABASE`        | MongoDB database name                                 | `notification_engine` |
+| **Caching & Limits**      |                                                        |                     |
 | `TEMPLATE_CACHE_TTL`      | L2 Redis cache TTL for templates                     | `5m`                |
-| `MAX_RETRIES`             | Retry hops before dead-lettering                      | `5`                 |
-| `RATELIMIT_*_PER_HOUR`    | Per-channel hourly cap per user (token bucket)        | 20 / 5 / 10         |
-| `WORKER_CHANNEL`          | `push_ios` `push_android` `sms` `email`               | `push_ios`          |
-| `WORKER_CONCURRENCY`      | Prefetch + goroutine pool size per worker            | `8`                 |
 | `DEDUPE_TTL`              | Idempotency window in Redis                           | `24h`               |
 | `HMAC_SKEW`               | Tolerance on signed timestamps                        | `5m`                |
-| `APP_KEY_RATE_LIMIT`      | Global QPS cap per app key                           |                     |
-| `JANITOR_INTERVAL`        | How often janitor runs (e.g., `30s`, `5m`)           | `5m`                |
-| `JANITOR_STUCK_THRESHOLD` | Age before a notification is considered stuck         | `1h`                |
-| `RELAY_INTERVAL`          | How often outbox relay runs                          | `2s`                |
+| `RATELIMIT_PUSH_PER_HOUR` | Per-user/channel hourly cap (push)                    | `20`                |
+| `RATELIMIT_SMS_PER_HOUR`  | Per-user/channel hourly cap (SMS)                     | `5`                 |
+| `RATELIMIT_EMAIL_PER_HOUR`| Per-user/channel hourly cap (email)                   | `10`                |
+| `APP_KEY_RATE_LIMIT`      | Global QPS cap per app key (0 = disabled)            | `0`                 |
+| **Worker & Retry**        |                                                        |                     |
+| `WORKER_CHANNEL`          | `push_ios` `push_android` `sms` `email`               | `push_ios`          |
+| `WORKER_CONCURRENCY`      | Prefetch + goroutine pool size per worker            | `8`                 |
+| `MAX_RETRIES`             | Retry hops before dead-lettering                      | `5`                 |
+| **Janitor & Outbox**      |                                                        |                     |
+| `JANITOR_INTERVAL`        | How often janitor runs (e.g., `30s`, `5m`)           | `30s`               |
+| `JANITOR_STUCK_THRESHOLD` | Age before a notification is considered stuck         | `5m`                |
+| `JANITOR_BATCH_SIZE`      | Batch size for stuck-notification recovery           | `100`               |
+| `RELAY_INTERVAL`          | How often outbox relay runs                          | `500ms`             |
+| `RELAY_BATCH_SIZE`        | Batch size for outbox relay                          | `100`               |
 
 See `.env.example` for the full list.
+
+### Authentication
+
+The API supports **two authentication mechanisms** (choose one or both):
+
+#### 1. JWT (user-facing auth — optional)
+
+For end users signing up via any JWT provider. **Clerk is an example; you can use any JWT issuer.**
+
+```bash
+# Users authenticate via your JWT provider (Account Portal, custom frontend, etc.)
+# They get a JWT → app forwards it to the API as: Authorization: Bearer <jwt>
+
+curl -X POST http://localhost:8080/v1/notifications \
+  -H "Authorization: Bearer eyJhbGc..." \
+  -H "Content-Type: application/json" \
+  -d '{"event_id":"...","channel":"email",...}'
+```
+
+**Configure via** (pick your JWT provider):
+- `CLERK_ISSUER` — Clerk example: `https://my-slug.clerk.accounts.dev`
+  - Or any OpenID issuer with a JWKS endpoint
+- `CLERK_AUTHORIZED_PARTIES` (optional) — comma-separated allowed origins for JWT's `azp` claim
+
+The API verifies the JWT signature against the issuer's JWKS endpoint, caches public keys, and validates claims. Leave `CLERK_ISSUER` empty to disable JWT auth.
+
+#### 2. HMAC-SHA256 (server-to-server — always available)
+
+For internal services, testing, and systems without a JWT provider:
+
+```bash
+TS=$(date +%s)
+BODY='{"event_id":"...","channel":"email",...}'
+SIG=$(printf "%s\n%s\n%s\n%s" "$TS" POST /v1/notifications "$BODY" \
+       | openssl dgst -sha256 -hmac demo-secret-please-change | awk '{print $2}')
+
+curl -X POST http://localhost:8080/v1/notifications \
+  -H "X-App-Key: demo-app" \
+  -H "X-App-Timestamp: $TS" \
+  -H "X-App-Signature: $SIG" \
+  -H "Content-Type: application/json" \
+  -d "$BODY"
+```
+
+**Configure via:**
+- `APP_CLIENTS` — `key1:secret1,key2:secret2,...` (comma-separated). Always works; no external dependencies.
+
+**Flexibility:**
+- **JWT only:** set `CLERK_ISSUER`, leave `APP_CLIENTS` empty
+- **HMAC only:** leave `CLERK_ISSUER` empty, set `APP_CLIENTS` (default for local dev)
+- **Both:** set both — the middleware dispatches by credential type
+- At least one must be configured
 
 ---
 
@@ -198,6 +305,8 @@ docker compose -f deploy/compose/docker-compose.yml exec postgres \
 
 ### Issuing a request by hand
 
+#### Via HMAC (server-to-server)
+
 ```bash
 TS=$(date +%s)
 BODY='{"event_id":"manual-1","channel":"email","recipient":{"user_id":1},"template_id":"11111111-1111-1111-1111-111111111111","variables":{"Name":"You","Product":"NotifEngine"}}'
@@ -213,6 +322,21 @@ curl -sS -X POST http://localhost:8080/v1/notifications \
 ```
 
 The signature covers `timestamp \n method \n path \n raw-body`. See `internal/platform/auth/hmac.go` for the exact algorithm.
+
+#### Via Clerk JWT (user-facing)
+
+With `CLERK_ISSUER` configured, test by fetching a JWT from Clerk:
+
+```bash
+# 1. Use Clerk's Account Portal or a JWT template to obtain a token
+# 2. Issue a request with the Bearer token
+JWT="eyJhbGciOiJSUzI1NiIsImtpZCI6Ijxx..." # from Clerk
+
+curl -sS -X POST http://localhost:8080/v1/notifications \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $JWT" \
+  -d '{"event_id":"manual-2","channel":"email","recipient":{"user_id":1},"template_id":"11111111-1111-1111-1111-111111111111","variables":{"Name":"You"}}'
+```
 
 ---
 
@@ -234,27 +358,27 @@ cmd/
   outbox-relay/main.go         # drains notification_outbox to RabbitMQ
 
 internal/
-  domain/                      # entities, value objects, state machine, sentinel errors
-  port/                        # interfaces — what services need from infrastructure
-  service/                     # one struct + Execute() per use case
+  domain/                      # entities, value objects, state machine, sentinel errors — NO infrastructure deps
+  port/                        # interfaces — what services need (pluggable ports, not tied to tech)
+  service/                     # orchestration — NO infrastructure deps
   platform/
-    auth/                      # HMAC verifier
+    auth/                      # JWT (any OpenID) + HMAC verifiers
     config/                    # env-based config loader
 
-infrastructure/                # driven adapters at repo root
-  postgres/                    # NotificationRepository, UserRepository, OutboxRepository
-  mongodb/                     # TemplateRepository (templates + media URLs)
-  redis/                       # RateLimiter, Deduper, TemplateCache, CircuitBreaker
-  rabbitmq/                    # EventPublisher + topology setup
-  rendering/                   # TemplateRenderer impl (text/html with L1 cache)
+infrastructure/                # adapters — pluggable implementations of ports
+  postgres/                    # NotificationRepository (swappable: MySQL, SQLite, etc.)
+  mongodb/                     # TemplateRepository (swappable: Firestore, DynamoDB, etc.)
+  redis/                       # RateLimiter, Deduper (swappable: Memcached, DynamoDB, etc.)
+  rabbitmq/                    # EventPublisher (swappable: Kafka, SQS, Pub/Sub, etc.)
+  rendering/                   # TemplateRenderer (in-process caching)
   provider/
-    mock/                      # NotificationProvider (logging-only, used locally)
-    apns/fcm/twilio/sendgrid/  # real provider skeletons
+    mock/                      # mock provider (used in development)
+    apns/fcm/twilio/sendgrid/  # real provider adapters (pluggable)
 
-middleware/                    # HTTP middleware (RequestID, Recoverer, AccessLog, HMACAuth, AppKeyRateLimit)
+middleware/                    # HTTP middleware (auth-agnostic, infra-agnostic)
 observability/
-  logger/logger.go             # slog logger (package logger)
-  metrics/metrics.go           # Prometheus MetricsRecorder (package metrics)
+  logger/logger.go             # slog logger
+  metrics/metrics.go           # Prometheus (pluggable: other metrics backends)
 
 deploy/
   docker/                      # Dockerfile.{api,worker,migrate,janitor,outbox-relay}
@@ -315,18 +439,24 @@ See `architecture-specifications.md` §13.1 for implementation notes.
 
 ## Architecture
 
-This codebase follows **hexagonal (ports-and-adapters)** architecture:
+This codebase follows **hexagonal (ports-and-adapters)** architecture, making it **infrastructure-agnostic**:
 
-- **Domain** (`internal/domain/`) — zero infrastructure dependencies. Entities, value objects, state machine, sentinel errors.
-- **Ports** (`internal/port/`) — small interfaces describing what services need (repositories, queues, providers, caches, etc.).
-- **Services** (`internal/service/`) — orchestration logic. One struct per use case; no infrastructure knowledge.
-- **Driving adapters** — translate HTTP/AMQP into service input (`cmd/api/http/`, `cmd/worker/consumer/`).
-- **Driven adapters** — concrete implementations of ports (`infrastructure/{postgres,mongodb,redis,rabbitmq,provider,rendering}/`).
+- **Domain** (`internal/domain/`) — zero infrastructure dependencies. Entities, value objects, state machine, sentinel errors. Pure business logic.
+- **Ports** (`internal/port/`) — small interfaces describing what services need. No implementation details. Examples: `NotificationRepository`, `EventPublisher`, `RateLimiter`, `NotificationProvider`.
+- **Services** (`internal/service/`) — orchestration logic. One struct per use case. Depends only on domain + ports; no infrastructure knowledge.
+- **Driving adapters** — translate HTTP/AMQP into service input. Examples: `cmd/api/http/`, `cmd/worker/consumer/`.
+- **Driven adapters** — concrete implementations of ports. Currently: Postgres, MongoDB, Redis, RabbitMQ. But ports are designed for swapping.
 
-This architecture ensures:
+**Benefits of this architecture:**
 - Business logic is **testable without containers** (use-case tests run against in-memory port fakes).
-- **Technology choices are pluggable** — swap Postgres for MySQL, RabbitMQ for Kafka, Prometheus for OTel without touching domain or services.
-- **Clear dependency direction** — `domain ← port ← service ← infrastructure ← cmd/*/main.go`.
+- **Technology choices are pluggable:**
+  - Swap Postgres → MySQL, SQLite, or any SQL database (same port interface).
+  - Swap RabbitMQ → Kafka, SQS, GCP Pub/Sub, or any message queue.
+  - Swap Redis → Memcached, DynamoDB, or any cache.
+  - Swap MongoDB → Firestore, DynamoDB, or any document store.
+  - Swap Prometheus → any metrics backend.
+  - Swap Clerk/JWT → any OpenID issuer or HMAC-only.
+- **Clear dependency direction** — `domain ← port ← service ← infrastructure ← cmd/*/main.go`. Infrastructure can't sneak into domain.
 
 For a detailed breakdown of layers, ports, aggregates, and the state machine, see [`architecture-specifications.md`](./architecture-specifications.md).
 

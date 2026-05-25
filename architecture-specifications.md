@@ -19,6 +19,14 @@ internal services ──► HTTP API ──► message queue ──► per-chann
                                        └─► persistence + analytics
 ```
 
+**Infrastructure-agnostic design:** The codebase is decoupled from specific technology choices:
+- **Databases:** Works with Postgres (included), but schema is SQL-standard; easily swap for MySQL, MariaDB, etc.
+- **Cache:** Works with Redis (included), but rate-limiter/deduper are pluggable behind a `Cache` port.
+- **Message queue:** Works with RabbitMQ locally (docker-compose), but `EventPublisher` port supports any MQ (Kafka, SQS, GCP Pub/Sub, etc.).
+- **Document store:** Works with MongoDB (externally), but `TemplateRepository` port could use DynamoDB, Firestore, or Postgres JSONB.
+- **Authentication:** Works with any JWT issuer or HMAC-only mode; no vendor lock-in.
+- **Hosting:** Binaries run anywhere (Render, AWS, GCP, Azure, Kubernetes, VPS, on-premises).
+
 Locally everything (Postgres, Redis, RabbitMQ, the API, four workers, a
 one-shot migration job) runs from a single `docker compose up`. A **mock
 provider** logs every send so the full pipeline can be exercised without
@@ -34,7 +42,7 @@ real third-party credentials.
 | Resilience       | Retry with exponential backoff + dead-letter queue + alert |
 | Opt-out          | Per-(user, channel) `notification_settings` row            |
 | Anti-fatigue     | Per-(user, channel) hourly rate limit                      |
-| Authn            | HMAC-SHA256 (AppKey + AppSecret + signed timestamp)        |
+| Authn (pluggable)| JWT (any OpenID provider) **and/or** HMAC-SHA256           |
 | Observability    | structured `slog` logs, Prometheus metrics, health probes  |
 | Testability      | Hexagonal architecture; use cases tested with port fakes   |
 
@@ -116,7 +124,7 @@ Note: `cmd/api/http/` and `cmd/worker/consumer/` are **driving adapters** colloc
 | Services           | `internal/service/`                         | One struct + `Execute` per use case. All orchestration lives here.                                     | `domain`, `internal/port`, stdlib                  |
 | HTTP driving adp.  | `cmd/api/http/{handlers/,dto/,router.go}`   | HTTP delivery → service input. No business logic.                                                      | `internal/service`, `internal/port`, `domain`, third-party |
 | AMQP driving adp.  | `cmd/worker/consumer/`                      | AMQP delivery → service input. No business logic.                                                      | `internal/service`, `infrastructure/rabbitmq`, `domain` |
-| Middleware         | `middleware/`                               | HTTP request pipeline (RequestID, Recoverer, AccessLog, HMACAuth, AppKeyRateLimit)                    | `internal/port`, `internal/platform/auth`, third-party |
+| Middleware         | `middleware/`                               | HTTP request pipeline (RequestID, Recoverer, AccessLog, Authenticate, AppKeyRateLimit)                | `internal/port`, `internal/platform/auth`, third-party |
 | Infrastructure adp.| `infrastructure/{postgres,redis,rabbitmq,rendering,provider}/` | Concrete implementations of ports.                                              | `internal/port`, `domain`, third-party             |
 | Observability      | `observability/{logger/,metrics/}`          | slog logger + Prometheus MetricsRecorder implementation                                                | `internal/port`, stdlib, third-party               |
 | Platform           | `internal/platform/{auth,config}/`          | Cross-cutting infra not behind a port: HMAC verifier, env config loader                               | stdlib + third-party                               |
@@ -240,29 +248,29 @@ message can be re-driven by a janitor; the inverse never happens).
 | `cmd/api/http/handlers/`         | `Submit`/`Get`/`Create` | One file per endpoint (`submit_notification.go`, `get_notification.go`, `create_template.go`, `get_template.go`, `update_setting.go`, `register_device.go`). `handler.go` holds the `Handler` struct (fields use `Svc` suffix) and `writeJSON`. `error.go` holds `mapDomainError` + `writeError`. Each file has a matching `*_test.go`; shared fakes live in `fakes_test.go`. |
 | `cmd/api/http/dto/`              | n/a                     | One file per exported DTO type. `ToView` helper converts domain `Notification` to `NotificationView`.                                                                         |
 | `cmd/api/http/router.go`         | n/a                     | chi router wiring: `NewRouter(h, verifier, limiter, log, cfg)`. Health and metrics outside auth-protected sub-router.                                                         |
-| `middleware/`                    | n/a                     | RequestID (UUID per request), Recoverer (panic → 500 + stack log), AccessLog (slog + Prometheus histogram), HMACAuth (verifies `X-App-*` headers), AppKeyRateLimit.           |
+| `middleware/`                    | n/a                     | RequestID (UUID per request), Recoverer (panic → 500 + stack log), AccessLog (slog + Prometheus histogram), Authenticate (Clerk JWT + HMAC verification), AppKeyRateLimit.           |
 | `cmd/worker/consumer/`           | `ProcessNotification`   | Bounded-concurrency consumer: `Channel.Qos(prefetch)` → semaphore-limited goroutine pool. On service error, `Nack(requeue=true)`; otherwise `Ack`.                           |
 
-### 5.2 Infrastructure (outbound)
+### 5.2 Infrastructure (outbound — all pluggable)
 
 | Module                              | Implements                                    | Notes                                                                                                                                                                                              |
 | ----------------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `infrastructure/postgres/`          | `Notification/UserRepository`                 | pgx pool. Aggregates split per-file; one type per port. JSON columns for `recipient` + `variables`.                                                                                                |
-| `infrastructure/mongodb/`           | `TemplateRepository`                          | MongoDB collection `notification_templates`. `_id` is the UUID string. Unique index on `(name, channel, locale, version)`. Supports `media_urls` array for rich-media templates.                  |
-| `infrastructure/redis/`             | `RateLimiter`, `Deduper`, `TemplateCache`     | Token-bucket via Lua script; dedupe via `SETNX`+TTL; `TemplateCache` is a read-through write-through decorator wrapping the MongoDB repo (key `notif:tmpl:<uuid>`, configurable TTL). All three share a single `CircuitBreaker` — see §9.6. |
-| `infrastructure/rabbitmq/`          | `EventPublisher`                              | Topology declared by `Setup(channels)` — one work + retry + dead queue per channel; retries use the dead-letter-with-TTL pattern. Wire format uses an explicit `publishedNotification` struct so domain stays stable. |
+| `infrastructure/postgres/`          | `Notification/UserRepository`                 | Example: pgx pool. Could swap for MySQL, SQLite, CockroachDB. JSON columns for `recipient` + `variables`.                                                                                                |
+| `infrastructure/mongodb/`           | `TemplateRepository`                          | Example: MongoDB collection. Could swap for Firestore, DynamoDB, or Postgres JSONB. UUID as `_id`; unique index on `(name, channel, locale, version)`.                  |
+| `infrastructure/redis/`             | `RateLimiter`, `Deduper`, `TemplateCache`     | Example: Redis. Could swap for Memcached, DynamoDB, or in-memory store. Token-bucket via Lua; `TemplateCache` is a read-through write-through decorator. All three share a single `CircuitBreaker` — see §9.6. |
+| `infrastructure/rabbitmq/`          | `EventPublisher`                              | Example: RabbitMQ topology. Could swap for Kafka, SQS, GCP Pub/Sub, NATS. Declares one work + retry + dead queue per channel; dead-letter-with-TTL for retries. |
 | `infrastructure/provider/mock/`     | `NotificationProvider`                        | Logs every send; an injected `failureRate` exercises the retry branch in demos.                                                                                                                    |
-| `infrastructure/provider/{apns,fcm,twilio,sendgrid}/` | `NotificationProvider`        | Real provider skeletons with full request/response shape and transient/terminal error mapping.                                                                                                     |
+| `infrastructure/provider/{apns,fcm,twilio,sendgrid}/` | `NotificationProvider`        | Real provider adapters with full request/response shape and transient/terminal error mapping. (Easily extended for more providers.)                                                                                                     |
 | `infrastructure/rendering/`         | `TemplateRenderer`                            | Compiles `text/template` (or `html/template` for email auto-escape); per-id in-process cache with TTL.                                                                                            |
-| `observability/metrics/`            | `MetricsRecorder`                             | Prometheus-backed counter / histogram set. Exposed at `/metrics`. Tests use a no-op fake instead.                                                                                                  |
-| `observability/logger/`             | n/a                                           | slog JSON logger (cross-cutting, not behind a port).                                                                                                                                               |
+| `observability/metrics/`            | `MetricsRecorder`                             | Example: Prometheus. Could swap for OpenTelemetry, DataDog, NewRelic. Counter/histogram set exposed at `/metrics`. Tests use a no-op fake.                                                                                                  |
+| `observability/logger/`             | n/a                                           | slog JSON logger (cross-cutting, not behind a port). Example: stdout. Could redirect to any log sink.                                                                                                                                               |
 
 ### 5.3 Platform
 
 | Module                              | Notes                                                                                              |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `internal/platform/auth/`           | `Verifier.Verify(...)` + `Sign(...)`. Constant-time comparison. Skew-bounded timestamp check.      |
-| `internal/platform/config/`         | `caarlos0/env` env→struct binding. `RateLimit.AsMap()` produces the channel-keyed map.             |
+| `internal/platform/auth/`           | `Verifier` (HMAC — no external deps) + `ClerkVerifier` (JWT — works with any OpenID issuer). Constant-time comparison, JWKS caching, issuer + claim validation. Both optional; at least one required. |
+| `internal/platform/config/`         | `caarlos0/env` env→struct binding. Loads from environment variables, agnostic to the values themselves.             |
 
 ---
 
@@ -330,7 +338,7 @@ to consult Postgres for it.
 
 ## 8. HTTP API (v1)
 
-All `/v1/*` routes require HMAC headers. Health/metrics live outside.
+All `/v1/*` routes require **at least one** authentication mechanism (JWT or HMAC; see §8.1). Health/metrics live outside.
 
 | Method | Path                          | Use case                  | Success                |
 | ------ | ----------------------------- | ------------------------- | ---------------------- |
@@ -345,7 +353,35 @@ All `/v1/*` routes require HMAC headers. Health/metrics live outside.
 
 ### 8.1 Authentication
 
-The middleware `HMACAuth` requires three headers on every protected request:
+All `/v1/*` routes require **at least one of two independent authentication mechanisms**:
+
+#### 8.1.1 JWT (user-facing — optional)
+
+When `CLERK_ISSUER` is configured, the API accepts Bearer tokens:
+
+```
+Authorization: Bearer <jwt>
+```
+
+The verifier (`internal/platform/auth/clerk.go::ClerkVerifier`):
+- Fetches the issuer's JWKS at `CLERK_ISSUER + "/.well-known/jwks.json"` once and caches it with auto-refresh via `lestrrat-go/jwx/v2`.
+- Verifies the JWT's RS256 signature locally.
+- Validates the `iss` (issuer), `sub` (subject, user id), and optionally `azp` (authorized party) claims.
+- If `CLERK_AUTHORIZED_PARTIES` is set, rejects tokens whose `azp` is not in the list.
+- If `CLERK_ISSUER` is empty, JWT verification is disabled.
+
+**Works with any OpenID provider:**
+- **Clerk** (example shown; https://clerk.dev)
+- **Auth0** (https://auth0.com)
+- **Okta** (https://okta.com)
+- **Cognito** (AWS, https://aws.amazon.com/cognito)
+- **Your own** JWT issuer with a standard JWKS endpoint
+
+Users authenticate via your JWT provider's UI (no custom frontend required by this service). The provider issues session tokens that the app forwards to the API as Bearer tokens.
+
+#### 8.1.2 HMAC-SHA256 (server-to-server — always available)
+
+The middleware `Authenticate` also accepts HMAC-authenticated requests:
 
 ```
 X-App-Key:        <client identifier>
@@ -361,6 +397,26 @@ The verifier rejects:
 - a signature that doesn't match (constant-time compare).
 
 Clients are configured via `APP_CLIENTS=key1:secret1,key2:secret2,...`.
+
+**No external dependencies:** HMAC works in any environment (air-gapped, no internet, no third-party APIs).
+
+If `APP_CLIENTS` is empty, HMAC authentication is disabled.
+
+#### 8.1.3 Unified dispatch
+
+The middleware `Authenticate(clerk, hmac)` in `middleware/middleware.go`:
+- If `Authorization: Bearer` header is present and JWT is configured → verify with ClerkVerifier (or your JWT verifier).
+- Else if HMAC headers are present and HMAC is configured → verify with HMAC verifier.
+- Else → `401 Unauthorized`.
+
+Both mechanisms populate an `Identity{Subject, Kind}` context type (user id vs app key). For backward compatibility, `AppKeyFromContext` is still populated from `Identity.Subject`, so existing rate-limit and logging code works unchanged.
+
+**Configuration options:**
+- **JWT only:** set `CLERK_ISSUER` to your provider's URL, leave `APP_CLIENTS` empty.
+- **HMAC only:** leave `CLERK_ISSUER` empty, set `APP_CLIENTS` (no external dependencies).
+- **Both:** set both — the middleware dispatches by credential type.
+
+**At least one mechanism must be enabled** (`CLERK_ISSUER` or `APP_CLIENTS` non-empty), validated at startup in `config.validate()`.
 
 ### 8.2 Error envelope
 
@@ -496,11 +552,16 @@ See `.env.example` for the canonical list. Highlights:
 
 ```
 LOG_LEVEL, HTTP_ADDR
-POSTGRES_DSN, REDIS_ADDR, RABBITMQ_URL          (required)
-MONGODB_URI                                     (required, e.g. mongodb://notif:notif@mongodb:27017)
+POSTGRES_DSN, REDIS_ADDR, RABBITMQ_URL          (required — any Postgres, Redis, RabbitMQ provider)
+MONGODB_URI                                     (required — any MongoDB provider or self-hosted)
 MONGODB_DATABASE                                (default: notification_engine)
 TEMPLATE_CACHE_TTL                              (default: 5m — Redis L2 TTL for templates)
-APP_CLIENTS=key1:secret1,key2:secret2,...        (required)
+
+# Authentication — choose at least one; see §8.1 for details
+CLERK_ISSUER=https://<slug>.clerk.accounts.dev  (optional — any OpenID provider; leave empty for HMAC-only)
+CLERK_AUTHORIZED_PARTIES=https://yourdomain.com (optional — comma-separated allowed origins)
+APP_CLIENTS=key1:secret1,key2:secret2,...        (optional — HMAC clients; leave empty for JWT-only)
+
 PROVIDER_MODE=mock|real
 MAX_RETRIES=5
 DEDUPE_TTL=24h
@@ -511,26 +572,82 @@ RATELIMIT_SMS_PER_HOUR=5
 RATELIMIT_EMAIL_PER_HOUR=10
 WORKER_CHANNEL=push_ios|push_android|sms|email   (worker only)
 WORKER_CONCURRENCY=8
+JANITOR_INTERVAL=30s
+JANITOR_STUCK_THRESHOLD=5m
+RELAY_INTERVAL=500ms
 ```
+
+**Flexibility notes:**
+- Choose any Postgres, Redis, RabbitMQ, or MongoDB provider — the code doesn't care which.
+- Authentication: use JWT (any OpenID issuer), HMAC (no external deps), or both.
+- Render, docker-compose, and Kubernetes deployments all use the same binaries and env vars.
 
 ---
 
 ## 12. Deployment
 
+### 12.1 Local development: docker-compose
+
 `deploy/compose/docker-compose.yml` brings up:
 
-- `postgres:16-alpine`
-- `redis:7-alpine`
+- `postgres:16-alpine` (managed)
+- `redis:7-alpine` (managed)
 - `mongo:7` — template store (port `:27017`, persisted in `mongodata` volume)
 - `rabbitmq:3-management` (UI on `:15672`)
 - `migrate` (one-shot goose runner; `Dockerfile.migrate`)
 - `api` (`Dockerfile.api`) on `:8080`
 - four workers — one per channel — each with `WORKER_CHANNEL` set, sharing
   `Dockerfile.worker`.
+- `janitor` — rescues stuck notifications
+- `outbox-relay` — drains the transactional outbox
+- `prometheus` — scrapes metrics from API and workers
 
 Both API and worker images are distroless static binaries with `nonroot` user.
 Healthchecks gate dependencies (api waits on `migrate` success and
 healthy redis + rabbit; workers wait on api).
+
+### 12.2 Production deployment
+
+**The binaries are cloud-agnostic.** Deploy to any infrastructure by wiring environment variables. Example platforms:
+
+#### Render (example provided)
+
+`render.yaml` at the repo root is a **Render Blueprint** (infrastructure-as-code). It declares:
+
+- **Databases:** Postgres (Render-managed)
+- **Cache:** Redis (Render-managed)
+- **External services** (choose your providers, not managed by Render):
+  - **RabbitMQ:** CloudAMQP (https://cloudamqp.com) is one free option; use any RabbitMQ provider or self-host.
+  - **MongoDB:** MongoDB Atlas (https://mongodb.com/atlas) is one free option; use any MongoDB provider or self-host.
+  - **Authentication:** (optional) Clerk or any JWT issuer; or HMAC-only mode.
+- **Compute:** API web service + 6 background workers (4 per-channel + janitor + outbox-relay)
+
+Secret env vars (`RABBITMQ_URL`, `MONGODB_URI`, `CLERK_ISSUER`, `APP_CLIENTS`) are marked `sync: false` — set in the Render dashboard at deploy time.
+
+**Known limitation:** `sync: false` vars in `envVarGroups` do not surface in the Blueprint form; must be set in Render dashboard **after** Blueprint apply under Env Groups → worker-shared.
+
+#### Other platforms
+
+The same Docker images run on:
+
+- **AWS** (ECS, EC2, Elastic Beanstalk, AppRunner) + RDS Postgres + ElastiCache Redis + your RabbitMQ/SQS/Kafka choice
+- **GCP** (Cloud Run, App Engine, GKE) + Cloud SQL Postgres + Memorystore Redis + Pub/Sub or external queue
+- **Azure** (App Service, Container Instances, AKS) + Azure Database Postgres + Azure Cache for Redis + Service Bus or external queue
+- **Kubernetes** (any cluster, any cloud) via Helm, kustomize, or kubectl manifests
+- **VPS** (DigitalOcean, Linode, Hetzner, etc.) with docker-compose or systemd units
+- **On-premises** with your own infrastructure
+
+Just set these env vars anywhere:
+```
+POSTGRES_DSN=...        (your Postgres instance)
+REDIS_ADDR=...          (your Redis instance)
+RABBITMQ_URL=...        (your RabbitMQ instance)
+MONGODB_URI=...         (your MongoDB instance)
+CLERK_ISSUER=...        (your JWT provider, or empty for HMAC-only)
+APP_CLIENTS=...         (your HMAC clients, or empty for JWT-only)
+```
+
+No code changes needed.
 
 ---
 
