@@ -26,7 +26,29 @@ type ctxKey string
 const (
 	ctxRequestID ctxKey = "request_id"
 	ctxAppKey    ctxKey = "app_key"
+	ctxIdentity  ctxKey = "identity"
 )
+
+// Identity represents the authenticated caller, regardless of mechanism.
+type Identity struct {
+	// Subject is the Clerk user ID (for bearer tokens) or the HMAC app key (for services).
+	Subject string
+	// Kind is "user" (Clerk JWT) or "service" (HMAC).
+	Kind string
+}
+
+// IdentityFromContext retrieves the authenticated Identity from the request context.
+func IdentityFromContext(ctx context.Context) (Identity, bool) {
+	v, ok := ctx.Value(ctxIdentity).(Identity)
+	return v, ok
+}
+
+func withIdentity(ctx context.Context, id Identity) context.Context {
+	ctx = context.WithValue(ctx, ctxIdentity, id)
+	// Populate ctxAppKey with Subject so AppKeyRateLimit and AccessLog work
+	// without modification regardless of auth mechanism.
+	return context.WithValue(ctx, ctxAppKey, id.Subject)
+}
 
 // RequestID assigns a UUID to every request and stamps it on the response.
 func RequestID(next http.Handler) http.Handler {
@@ -97,32 +119,68 @@ func AccessLog(log *slog.Logger, httpHist *prometheus.HistogramVec) func(http.Ha
 	}
 }
 
-// HMACAuth verifies signatures on every request. Unauthenticated routes
-// (e.g. /healthz, /metrics) must be mounted outside the protected sub-router.
-func HMACAuth(v *auth.Verifier) func(http.Handler) http.Handler {
+// Authenticate verifies every request using whichever credential is present:
+//   - Authorization: Bearer <jwt>  →  Clerk JWT verification (when clerk != nil)
+//   - X-App-Key + HMAC headers     →  HMAC-SHA256 verification (when hmacVer != nil)
+//
+// Passing nil for either disables that mechanism. At least one must be non-nil.
+// Unauthenticated routes (e.g. /healthz, /metrics) must be mounted outside the
+// protected sub-router.
+func Authenticate(clerk *auth.ClerkVerifier, hmacVer *auth.Verifier) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
-			if err != nil {
-				writeErr(w, http.StatusBadRequest, "invalid body")
-				return
+			// Clerk Bearer path — no body needed.
+			if clerk != nil {
+				if bearer := extractBearer(r); bearer != "" {
+					claims, err := clerk.Verify(r.Context(), bearer)
+					if err != nil {
+						writeErr(w, http.StatusUnauthorized, "unauthorized")
+						return
+					}
+					ctx := withIdentity(r.Context(), Identity{Subject: claims.Subject, Kind: "user"})
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
 			}
-			r.Body = io.NopCloser(bytes.NewReader(body))
 
-			key, err := v.Verify(
-				r.Header.Get(auth.HeaderAppKey),
-				r.Header.Get(auth.HeaderTimestamp),
-				r.Header.Get(auth.HeaderSignature),
-				r.Method, r.URL.Path, body,
-			)
-			if err != nil {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
+			// HMAC path — reads and replaces body so downstream handlers see it.
+			if hmacVer != nil {
+				body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+				if err != nil {
+					writeErr(w, http.StatusBadRequest, "invalid body")
+					return
+				}
+				r.Body = io.NopCloser(bytes.NewReader(body))
+
+				key, err := hmacVer.Verify(
+					r.Header.Get(auth.HeaderAppKey),
+					r.Header.Get(auth.HeaderTimestamp),
+					r.Header.Get(auth.HeaderSignature),
+					r.Method, r.URL.Path, body,
+				)
+				if err != nil {
+					writeErr(w, http.StatusUnauthorized, "unauthorized")
+					return
+				}
+				ctx := withIdentity(r.Context(), Identity{Subject: key, Kind: "service"})
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
-			ctx := context.WithValue(r.Context(), ctxAppKey, key)
-			next.ServeHTTP(w, r.WithContext(ctx))
+
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
 		})
 	}
+}
+
+// extractBearer returns the token from an "Authorization: Bearer <token>" header,
+// or empty string if absent or malformed.
+func extractBearer(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(h) > len(prefix) && h[:len(prefix)] == prefix {
+		return h[len(prefix):]
+	}
+	return ""
 }
 
 func writeErr(w http.ResponseWriter, status int, msg string) {

@@ -25,6 +25,10 @@ type Config struct {
 	MaxRetries   int           `env:"MAX_RETRIES" envDefault:"5"`
 	HMACSkew     time.Duration `env:"HMAC_SKEW" envDefault:"5m"`
 	DedupeTTL    time.Duration `env:"DEDUPE_TTL" envDefault:"24h"`
+
+	// Clerk JWT auth (optional — leave CLERK_ISSUER empty to use HMAC only).
+	ClerkIssuer           string   `env:"CLERK_ISSUER"`
+	ClerkAuthorizedParties []string `env:"CLERK_AUTHORIZED_PARTIES" envSeparator:","`
 	RateLimitWindow time.Duration `env:"RATELIMIT_WINDOW" envDefault:"1h"`
 
 	// MongoDB (used for template storage).
@@ -61,7 +65,8 @@ type Config struct {
 	SendGridFromName  string `env:"SENDGRID_FROM_NAME"`
 
 	RateLimit RateLimit
-	AppClients map[string]string `env:"APP_CLIENTS,required" envSeparator:","`
+	// AppClients is required when CLERK_ISSUER is not set; optional otherwise.
+	AppClients map[string]string `env:"APP_CLIENTS" envSeparator:","`
 
 	WorkerChannel     string `env:"WORKER_CHANNEL" envDefault:"push_ios"`
 	WorkerConcurrency int    `env:"WORKER_CONCURRENCY" envDefault:"8"`
@@ -96,8 +101,8 @@ func Load() (Config, error) {
 }
 
 func validate(c Config) error {
-	if len(c.AppClients) == 0 {
-		return fmt.Errorf("config: APP_CLIENTS must define at least one key:secret pair")
+	if c.ClerkIssuer == "" && len(c.AppClients) == 0 {
+		return fmt.Errorf("config: at least one auth mechanism required — set CLERK_ISSUER or APP_CLIENTS")
 	}
 	switch strings.ToLower(c.ProviderMode) {
 	case "mock", "real":

@@ -1,0 +1,207 @@
+# Render Blueprint — NotificationEngine
+#
+# Deploys the full stack: Postgres, Redis, RabbitMQ, MongoDB,
+# the API web service, four per-channel workers, the janitor, and the outbox relay.
+#
+# Usage:
+#   1. Push this repo to GitHub / GitLab.
+#   2. In the Render dashboard → Blueprints → New Blueprint → select this repo.
+#   3. Fill in the secret env vars (marked sync: false) in the Render dashboard.
+#   4. Click "Apply" — Render provisions everything in order.
+#
+# RabbitMQ and MongoDB are not managed by Render; they run as private services
+# using official Docker images with persistent disks. For production you may
+# prefer CloudAMQP (managed RabbitMQ) and MongoDB Atlas, then delete the
+# rabbitmq / mongodb sections below and set RABBITMQ_URL / MONGODB_URI directly.
+
+databases:
+  - name: notification-postgres
+    databaseName: notif
+    user: notif
+    plan: free           # change to "starter" or "standard" for production
+
+services:
+  # ─── Redis (Render Key Value) ─────────────────────────────────────
+  - type: redis
+    name: notification-redis
+    plan: free           # change for production
+    ipAllowList: []      # private network only
+
+  # ─── RabbitMQ (private Docker service) ────────────────────────────
+  - type: worker
+    name: rabbitmq
+    runtime: image
+    image:
+      url: docker.io/rabbitmq:3-management
+    plan: starter
+    disk:
+      name: rabbitmq-data
+      mountPath: /var/lib/rabbitmq
+      sizeGB: 5
+    envVars:
+      - key: RABBITMQ_DEFAULT_USER
+        value: notif
+      - key: RABBITMQ_DEFAULT_PASS
+        generateValue: true   # Render auto-generates; copy into RABBITMQ_URL below
+
+  # ─── MongoDB (private Docker service) ─────────────────────────────
+  - type: worker
+    name: mongodb
+    runtime: image
+    image:
+      url: docker.io/mongo:7
+    plan: starter
+    disk:
+      name: mongo-data
+      mountPath: /data/db
+      sizeGB: 10
+    envVars:
+      - key: MONGO_INITDB_ROOT_USERNAME
+        value: notif
+      - key: MONGO_INITDB_ROOT_PASSWORD
+        generateValue: true   # copy into MONGODB_URI below
+
+  # ─── API (web service) ────────────────────────────────────────────
+  - type: web
+    name: notification-api
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.api
+    plan: starter
+    healthCheckPath: /healthz
+    envVars:
+      - key: HTTP_ADDR
+        value: :8080
+      - key: LOG_LEVEL
+        value: info
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: host
+      - key: RABBITMQ_URL
+        sync: false   # set manually: amqp://notif:<password>@rabbitmq:5672/
+      - key: MONGODB_URI
+        sync: false   # set manually: mongodb://notif:<password>@mongodb:27017
+      - key: MONGODB_DATABASE
+        value: notification_engine
+      - key: TEMPLATE_CACHE_TTL
+        value: 5m
+      - key: PROVIDER_MODE
+        value: mock   # change to "real" and set provider credentials for production
+      - key: MAX_RETRIES
+        value: "5"
+      - key: DEDUPE_TTL
+        value: 24h
+      - key: RATELIMIT_WINDOW
+        value: 1h
+      - key: RATELIMIT_PUSH_PER_HOUR
+        value: "20"
+      - key: RATELIMIT_SMS_PER_HOUR
+        value: "5"
+      - key: RATELIMIT_EMAIL_PER_HOUR
+        value: "10"
+      - key: APP_KEY_RATE_LIMIT
+        value: "0"
+      - key: APP_KEY_RATE_WINDOW
+        value: 1s
+      - key: HMAC_SKEW
+        value: 5m
+      # Clerk JWT auth — leave CLERK_ISSUER empty to fall back to HMAC-only
+      - key: CLERK_ISSUER
+        sync: false   # e.g. https://<slug>.clerk.accounts.dev
+      - key: CLERK_AUTHORIZED_PARTIES
+        sync: false   # e.g. https://yourapp.com (comma-separated)
+      # HMAC clients — optional when CLERK_ISSUER is set
+      - key: APP_CLIENTS
+        sync: false   # e.g. demo-app:demo-secret-please-change
+      # Janitor / relay intervals (used by background workers)
+      - key: JANITOR_INTERVAL
+        value: 30s
+      - key: JANITOR_STUCK_THRESHOLD
+        value: 5m
+      - key: JANITOR_BATCH_SIZE
+        value: "100"
+      - key: RELAY_INTERVAL
+        value: 500ms
+      - key: RELAY_BATCH_SIZE
+        value: "100"
+
+  # ─── Per-channel workers ───────────────────────────────────────────
+  - type: worker
+    name: worker-push-ios
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.worker
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+      - key: WORKER_CHANNEL
+        value: push_ios
+
+  - type: worker
+    name: worker-push-android
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.worker
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+      - key: WORKER_CHANNEL
+        value: push_android
+
+  - type: worker
+    name: worker-sms
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.worker
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+      - key: WORKER_CHANNEL
+        value: sms
+
+  - type: worker
+    name: worker-email
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.worker
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+      - key: WORKER_CHANNEL
+        value: email
+
+  # ─── Janitor (stuck-notification rescue) ──────────────────────────
+  - type: worker
+    name: janitor
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.janitor
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+
+  # ─── Outbox relay ─────────────────────────────────────────────────
+  - type: worker
+    name: outbox-relay
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.outbox-relay
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+
+# ─── Shared env group (workers) ─────────────────────────────────────
+# Create an env group named "worker-shared" in the Render dashboard with:
+#   POSTGRES_DSN   (from notification-postgres connection string)
+#   REDIS_ADDR     (from notification-redis host)
+#   RABBITMQ_URL   amqp://notif:<password>@rabbitmq:5672/
+#   MONGODB_URI    mongodb://notif:<password>@mongodb:27017
+#   MONGODB_DATABASE  notification_engine
+#   WORKER_CONCURRENCY  8
+#   MAX_RETRIES    5
+#   PROVIDER_MODE  mock
+#   LOG_LEVEL      info
+#   JANITOR_INTERVAL         30s
+#   JANITOR_STUCK_THRESHOLD  5m
+#   JANITOR_BATCH_SIZE       100
+#   RELAY_INTERVAL           500ms
+#   RELAY_BATCH_SIZE         100

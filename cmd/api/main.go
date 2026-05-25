@@ -119,6 +119,20 @@ func run() error {
 	updateSetting := &service.UpdateSetting{Users: usersRepo, Clock: clock}
 	registerDevice := &service.RegisterDevice{Users: usersRepo, Clock: clock}
 
+	// --- auth ---
+	clerkVerifier, err := auth.NewClerkVerifier(ctx, cfg.ClerkIssuer, cfg.ClerkAuthorizedParties)
+	if err != nil {
+		return fmt.Errorf("clerk: %w", err)
+	}
+	if clerkVerifier != nil {
+		log.Info("clerk auth enabled", "issuer", cfg.ClerkIssuer)
+	}
+	var hmacVerifier *auth.Verifier
+	if len(cfg.AppClients) > 0 {
+		hmacVerifier = auth.NewVerifier(cfg.AppClients, cfg.HMACSkew)
+		log.Info("hmac auth enabled", "clients", len(cfg.AppClients))
+	}
+
 	// --- inbound adapter ---
 	h := &handlers.Handler{
 		SubmitSvc:         submit,
@@ -128,11 +142,10 @@ func run() error {
 		UpdateSettingSvc:  updateSetting,
 		RegisterDeviceSvc: registerDevice,
 	}
-	verifier := auth.NewVerifier(cfg.AppClients, cfg.HMACSkew)
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
-		Handler: httpapi.NewRouter(h, verifier, limiter, log, httpapi.RouterConfig{
+		Handler: httpapi.NewRouter(h, clerkVerifier, hmacVerifier, limiter, log, httpapi.RouterConfig{
 			AppKeyRateLimit:  cfg.AppKeyRateLimit,
 			AppKeyRateWindow: cfg.AppKeyRateWindow,
 		}),

@@ -24,9 +24,17 @@ type RouterConfig struct {
 }
 
 // NewRouter wires middleware and the handler onto a chi router. Health and
-// metrics live outside the HMAC-protected sub-router so probes don't sign
-// their requests.
-func NewRouter(h *handlers.Handler, verifier *auth.Verifier, limiter port.RateLimiter, log *slog.Logger, cfg RouterConfig) http.Handler {
+// metrics live outside the auth-protected sub-router so probes don't need credentials.
+// clerk may be nil (Clerk disabled); hmacVerifier may be nil (HMAC disabled).
+// At least one of the two must be non-nil.
+func NewRouter(
+	h *handlers.Handler,
+	clerk *auth.ClerkVerifier,
+	hmacVerifier *auth.Verifier,
+	limiter port.RateLimiter,
+	log *slog.Logger,
+	cfg RouterConfig,
+) http.Handler {
 	r := chi.NewRouter()
 
 	httpHist := promauto.NewHistogramVec(prometheus.HistogramOpts{
@@ -44,7 +52,7 @@ func NewRouter(h *handlers.Handler, verifier *auth.Verifier, limiter port.RateLi
 	r.Handle("/metrics", promhttp.Handler())
 
 	r.Group(func(r chi.Router) {
-		r.Use(mw.HMACAuth(verifier))
+		r.Use(mw.Authenticate(clerk, hmacVerifier))
 		r.Use(mw.AppKeyRateLimit(limiter, cfg.AppKeyRateLimit, cfg.AppKeyRateWindow))
 		r.Route("/v1", func(r chi.Router) {
 			r.Post("/notifications", h.SubmitNotification)
