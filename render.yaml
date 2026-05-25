@@ -20,10 +20,13 @@ envVarGroups:
   # Shared by API + all workers. Set RABBITMQ_URL and MONGODB_URI here once.
   - name: worker-shared
     envVars:
+      # These are filled via the Blueprint form when the API service is created.
+      # Workers inherit them from this group — after Blueprint apply, confirm
+      # these values appear in Render dashboard → Env Groups → worker-shared.
       - key: RABBITMQ_URL
         sync: false       # amqps://user:pass@host/vhost  (from CloudAMQP)
       - key: MONGODB_URI
-        sync: false       # mongodb+srv://user:pass@cluster/  (from Atlas)
+        sync: false       # mongodb+srv://user:ENCODED_PASS@cluster/ — see note below
       - key: MONGODB_DATABASE
         value: notification_engine
       - key: WORKER_CONCURRENCY
@@ -70,9 +73,16 @@ services:
     plan: starter
     healthCheckPath: /healthz
     envVars:
-      - fromGroup: worker-shared   # pulls RABBITMQ_URL, MONGODB_URI, and shared config
+      - fromGroup: worker-shared
       - key: HTTP_ADDR
         value: :8080
+      # RABBITMQ_URL and MONGODB_URI are also set here at the service level so
+      # Render's Blueprint form shows them — service-level value takes precedence
+      # over the env group value for this service.
+      - key: RABBITMQ_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
       - key: POSTGRES_DSN
         fromDatabase:
           name: notification-postgres
