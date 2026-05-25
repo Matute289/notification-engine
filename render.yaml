@@ -1,65 +1,33 @@
 # Render Blueprint — NotificationEngine
 #
-# Deploys the full stack: Postgres, Redis, RabbitMQ, MongoDB,
-# the API web service, four per-channel workers, the janitor, and the outbox relay.
+# Postgres and Redis are provisioned by Render (managed).
+# RabbitMQ and MongoDB are external managed services — Render does not support
+# pulling arbitrary Docker Hub images in Blueprint service definitions.
+#
+# Before applying this Blueprint, set up:
+#   • RabbitMQ → CloudAMQP (https://cloudamqp.com) — free "Lemur" plan is enough to start.
+#                Copy the AMQP URL (amqps://...) into RABBITMQ_URL.
+#   • MongoDB  → MongoDB Atlas (https://mongodb.com/atlas) — free M0 cluster.
+#                Copy the connection string (mongodb+srv://...) into MONGODB_URI.
 #
 # Usage:
 #   1. Push this repo to GitHub / GitLab.
-#   2. In the Render dashboard → Blueprints → New Blueprint → select this repo.
-#   3. Fill in the secret env vars (marked sync: false) in the Render dashboard.
-#   4. Click "Apply" — Render provisions everything in order.
-#
-# RabbitMQ and MongoDB are not managed by Render; they run as private services
-# using official Docker images with persistent disks. For production you may
-# prefer CloudAMQP (managed RabbitMQ) and MongoDB Atlas, then delete the
-# rabbitmq / mongodb sections below and set RABBITMQ_URL / MONGODB_URI directly.
+#   2. Render dashboard → New → Blueprint → select this repo.
+#   3. Render detects render.yaml and shows a form for the sync: false vars.
+#   4. Fill in the secrets (see list below), then click Apply.
 
 databases:
   - name: notification-postgres
     databaseName: notif
     user: notif
-    plan: free           # change to "starter" or "standard" for production
+    plan: free           # upgrade to "starter" or "standard" for production
 
 services:
   # ─── Redis (Render Key Value) ─────────────────────────────────────
   - type: redis
     name: notification-redis
-    plan: free           # change for production
+    plan: free           # upgrade for production
     ipAllowList: []      # private network only
-
-  # ─── RabbitMQ (private Docker service) ────────────────────────────
-  - type: worker
-    name: rabbitmq
-    runtime: image
-    image:
-      url: docker.io/rabbitmq:3-management
-    plan: starter
-    disk:
-      name: rabbitmq-data
-      mountPath: /var/lib/rabbitmq
-      sizeGB: 5
-    envVars:
-      - key: RABBITMQ_DEFAULT_USER
-        value: notif
-      - key: RABBITMQ_DEFAULT_PASS
-        generateValue: true   # Render auto-generates; copy into RABBITMQ_URL below
-
-  # ─── MongoDB (private Docker service) ─────────────────────────────
-  - type: worker
-    name: mongodb
-    runtime: image
-    image:
-      url: docker.io/mongo:7
-    plan: starter
-    disk:
-      name: mongo-data
-      mountPath: /data/db
-      sizeGB: 10
-    envVars:
-      - key: MONGO_INITDB_ROOT_USERNAME
-        value: notif
-      - key: MONGO_INITDB_ROOT_PASSWORD
-        generateValue: true   # copy into MONGODB_URI below
 
   # ─── API (web service) ────────────────────────────────────────────
   - type: web
@@ -82,16 +50,19 @@ services:
           name: notification-redis
           type: redis
           property: host
+      # ── External services (set manually) ──
       - key: RABBITMQ_URL
-        sync: false   # set manually: amqp://notif:<password>@rabbitmq:5672/
+        sync: false   # CloudAMQP AMQP URL: amqps://user:pass@host/vhost
       - key: MONGODB_URI
-        sync: false   # set manually: mongodb://notif:<password>@mongodb:27017
+        sync: false   # Atlas connection string: mongodb+srv://user:pass@cluster/
       - key: MONGODB_DATABASE
         value: notification_engine
       - key: TEMPLATE_CACHE_TTL
         value: 5m
+      # ── Provider ──
       - key: PROVIDER_MODE
-        value: mock   # change to "real" and set provider credentials for production
+        value: mock   # change to "real" and add provider credentials for production
+      # ── Behaviour knobs ──
       - key: MAX_RETRIES
         value: "5"
       - key: DEDUPE_TTL
@@ -110,15 +81,6 @@ services:
         value: 1s
       - key: HMAC_SKEW
         value: 5m
-      # Clerk JWT auth — leave CLERK_ISSUER empty to fall back to HMAC-only
-      - key: CLERK_ISSUER
-        sync: false   # e.g. https://<slug>.clerk.accounts.dev
-      - key: CLERK_AUTHORIZED_PARTIES
-        sync: false   # e.g. https://yourapp.com (comma-separated)
-      # HMAC clients — optional when CLERK_ISSUER is set
-      - key: APP_CLIENTS
-        sync: false   # e.g. demo-app:demo-secret-please-change
-      # Janitor / relay intervals (used by background workers)
       - key: JANITOR_INTERVAL
         value: 30s
       - key: JANITOR_STUCK_THRESHOLD
@@ -129,6 +91,13 @@ services:
         value: 500ms
       - key: RELAY_BATCH_SIZE
         value: "100"
+      # ── Auth (at least one required) ──
+      - key: CLERK_ISSUER
+        sync: false   # e.g. https://<slug>.clerk.accounts.dev
+      - key: CLERK_AUTHORIZED_PARTIES
+        sync: false   # comma-separated allowed origins (can be left empty)
+      - key: APP_CLIENTS
+        sync: false   # HMAC clients: key1:secret1,key2:secret2 (optional if Clerk is set)
 
   # ─── Per-channel workers ───────────────────────────────────────────
   - type: worker
@@ -189,19 +158,21 @@ services:
     envVars:
       - fromGroup: worker-shared
 
-# ─── Shared env group (workers) ─────────────────────────────────────
-# Create an env group named "worker-shared" in the Render dashboard with:
-#   POSTGRES_DSN   (from notification-postgres connection string)
-#   REDIS_ADDR     (from notification-redis host)
-#   RABBITMQ_URL   amqp://notif:<password>@rabbitmq:5672/
-#   MONGODB_URI    mongodb://notif:<password>@mongodb:27017
-#   MONGODB_DATABASE  notification_engine
+# ─── Env group "worker-shared" ──────────────────────────────────────
+# Create this group in Render dashboard → Env Groups → New Group
+# named exactly "worker-shared", with these variables:
+#
+#   POSTGRES_DSN        (copy from notification-postgres → Connection String)
+#   REDIS_ADDR          (copy from notification-redis → Host, port 6379)
+#   RABBITMQ_URL        amqps://user:pass@host/vhost  (from CloudAMQP)
+#   MONGODB_URI         mongodb+srv://user:pass@cluster/ (from Atlas)
+#   MONGODB_DATABASE    notification_engine
 #   WORKER_CONCURRENCY  8
-#   MAX_RETRIES    5
-#   PROVIDER_MODE  mock
-#   LOG_LEVEL      info
-#   JANITOR_INTERVAL         30s
-#   JANITOR_STUCK_THRESHOLD  5m
-#   JANITOR_BATCH_SIZE       100
-#   RELAY_INTERVAL           500ms
-#   RELAY_BATCH_SIZE         100
+#   MAX_RETRIES         5
+#   PROVIDER_MODE       mock
+#   LOG_LEVEL           info
+#   JANITOR_INTERVAL          30s
+#   JANITOR_STUCK_THRESHOLD   5m
+#   JANITOR_BATCH_SIZE        100
+#   RELAY_INTERVAL            500ms
+#   RELAY_BATCH_SIZE          100
