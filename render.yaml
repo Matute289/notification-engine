@@ -1,26 +1,52 @@
 # Render Blueprint — NotificationEngine
 #
 # Postgres and Redis are provisioned by Render (managed).
-# RabbitMQ and MongoDB are external managed services — Render does not support
-# pulling arbitrary Docker Hub images in Blueprint service definitions.
+# RabbitMQ → CloudAMQP (https://cloudamqp.com, free "Lemur" plan)
+# MongoDB  → MongoDB Atlas (https://mongodb.com/atlas, free M0 cluster)
 #
-# Before applying this Blueprint, set up:
-#   • RabbitMQ → CloudAMQP (https://cloudamqp.com) — free "Lemur" plan is enough to start.
-#                Copy the AMQP URL (amqps://...) into RABBITMQ_URL.
-#   • MongoDB  → MongoDB Atlas (https://mongodb.com/atlas) — free M0 cluster.
-#                Copy the connection string (mongodb+srv://...) into MONGODB_URI.
-#
-# Usage:
-#   1. Push this repo to GitHub / GitLab.
-#   2. Render dashboard → New → Blueprint → select this repo.
-#   3. Render detects render.yaml and shows a form for the sync: false vars.
-#   4. Fill in the secrets (see list below), then click Apply.
+# Before applying:
+#   1. Create a CloudAMQP instance → copy the AMQP URL (amqps://...)
+#   2. Create a MongoDB Atlas cluster → copy the connection string (mongodb+srv://...)
+#   3. Render dashboard → New → Blueprint → select this repo
+#   4. Fill in the sync:false secrets → Apply
 
 databases:
   - name: notification-postgres
     databaseName: notif
     user: notif
     plan: free           # upgrade to "starter" or "standard" for production
+
+envVarGroups:
+  - name: worker-shared
+    envVars:
+      # External services — set these after creating CloudAMQP + Atlas
+      - key: RABBITMQ_URL
+        sync: false       # amqps://user:pass@host/vhost  (from CloudAMQP)
+      - key: MONGODB_URI
+        sync: false       # mongodb+srv://user:pass@cluster/  (from Atlas)
+      - key: MONGODB_DATABASE
+        value: notification_engine
+      # Worker behaviour
+      - key: WORKER_CONCURRENCY
+        value: "8"
+      - key: MAX_RETRIES
+        value: "5"
+      - key: PROVIDER_MODE
+        value: mock       # change to "real" for production
+      - key: LOG_LEVEL
+        value: info
+      # Janitor
+      - key: JANITOR_INTERVAL
+        value: 30s
+      - key: JANITOR_STUCK_THRESHOLD
+        value: 5m
+      - key: JANITOR_BATCH_SIZE
+        value: "100"
+      # Outbox relay
+      - key: RELAY_INTERVAL
+        value: 500ms
+      - key: RELAY_BATCH_SIZE
+        value: "100"
 
 services:
   # ─── Redis (Render Key Value) ─────────────────────────────────────
@@ -50,19 +76,16 @@ services:
           name: notification-redis
           type: redis
           property: host
-      # ── External services (set manually) ──
       - key: RABBITMQ_URL
-        sync: false   # CloudAMQP AMQP URL: amqps://user:pass@host/vhost
+        sync: false
       - key: MONGODB_URI
-        sync: false   # Atlas connection string: mongodb+srv://user:pass@cluster/
+        sync: false
       - key: MONGODB_DATABASE
         value: notification_engine
       - key: TEMPLATE_CACHE_TTL
         value: 5m
-      # ── Provider ──
       - key: PROVIDER_MODE
-        value: mock   # change to "real" and add provider credentials for production
-      # ── Behaviour knobs ──
+        value: mock
       - key: MAX_RETRIES
         value: "5"
       - key: DEDUPE_TTL
@@ -91,13 +114,13 @@ services:
         value: 500ms
       - key: RELAY_BATCH_SIZE
         value: "100"
-      # ── Auth (at least one required) ──
+      # ── Auth ──
       - key: CLERK_ISSUER
-        sync: false   # e.g. https://<slug>.clerk.accounts.dev
+        sync: false       # e.g. https://<slug>.clerk.accounts.dev
       - key: CLERK_AUTHORIZED_PARTIES
-        sync: false   # comma-separated allowed origins (can be left empty)
+        sync: false       # comma-separated allowed origins (can be left empty)
       - key: APP_CLIENTS
-        sync: false   # HMAC clients: key1:secret1,key2:secret2 (optional if Clerk is set)
+        sync: false       # key1:secret1,key2:secret2 (optional if Clerk is set)
 
   # ─── Per-channel workers ───────────────────────────────────────────
   - type: worker
@@ -107,6 +130,15 @@ services:
     plan: starter
     envVars:
       - fromGroup: worker-shared
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: host
       - key: WORKER_CHANNEL
         value: push_ios
 
@@ -117,6 +149,15 @@ services:
     plan: starter
     envVars:
       - fromGroup: worker-shared
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: host
       - key: WORKER_CHANNEL
         value: push_android
 
@@ -127,6 +168,15 @@ services:
     plan: starter
     envVars:
       - fromGroup: worker-shared
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: host
       - key: WORKER_CHANNEL
         value: sms
 
@@ -137,10 +187,19 @@ services:
     plan: starter
     envVars:
       - fromGroup: worker-shared
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: host
       - key: WORKER_CHANNEL
         value: email
 
-  # ─── Janitor (stuck-notification rescue) ──────────────────────────
+  # ─── Janitor ──────────────────────────────────────────────────────
   - type: worker
     name: janitor
     runtime: docker
@@ -148,6 +207,15 @@ services:
     plan: starter
     envVars:
       - fromGroup: worker-shared
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: host
 
   # ─── Outbox relay ─────────────────────────────────────────────────
   - type: worker
@@ -157,22 +225,12 @@ services:
     plan: starter
     envVars:
       - fromGroup: worker-shared
-
-# ─── Env group "worker-shared" ──────────────────────────────────────
-# Create this group in Render dashboard → Env Groups → New Group
-# named exactly "worker-shared", with these variables:
-#
-#   POSTGRES_DSN        (copy from notification-postgres → Connection String)
-#   REDIS_ADDR          (copy from notification-redis → Host, port 6379)
-#   RABBITMQ_URL        amqps://user:pass@host/vhost  (from CloudAMQP)
-#   MONGODB_URI         mongodb+srv://user:pass@cluster/ (from Atlas)
-#   MONGODB_DATABASE    notification_engine
-#   WORKER_CONCURRENCY  8
-#   MAX_RETRIES         5
-#   PROVIDER_MODE       mock
-#   LOG_LEVEL           info
-#   JANITOR_INTERVAL          30s
-#   JANITOR_STUCK_THRESHOLD   5m
-#   JANITOR_BATCH_SIZE        100
-#   RELAY_INTERVAL            500ms
-#   RELAY_BATCH_SIZE          100
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: host
