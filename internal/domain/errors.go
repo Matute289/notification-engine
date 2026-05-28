@@ -12,5 +12,6 @@ var (
 	ErrRateLimited              = errors.New("rate limit exceeded")
 	ErrDuplicateEvent           = errors.New("duplicate event_id")
 	ErrUnauthenticated          = errors.New("unauthenticated")
+	ErrForbidden                = errors.New("forbidden")
 	ErrInvalidStatusTransition  = errors.New("invalid notification status transition")
 )

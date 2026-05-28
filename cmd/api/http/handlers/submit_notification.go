@@ -7,6 +7,7 @@ import (
 	"github.com/example/notification-engine/cmd/api/http/dto"
 	"github.com/example/notification-engine/internal/domain"
 	"github.com/example/notification-engine/internal/service"
+	mw "github.com/example/notification-engine/middleware"
 )
 
 // SubmitNotification handles POST /v1/notifications.
@@ -35,6 +36,13 @@ func (h *Handler) SubmitNotification(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_phone", err.Error())
 		return
+	}
+
+	if req.Recipient.UserID != nil {
+		if err := mw.RequireUserOwnership(r.Context(), *req.Recipient.UserID); err != nil {
+			mapDomainError(w, err)
+			return
+		}
 	}
 
 	in := service.SubmitInput{

@@ -32,9 +32,10 @@ func NewVerifier(clients map[string]string, skew time.Duration) *Verifier {
 	return &Verifier{clients: clients, skew: skew, now: time.Now}
 }
 
-// Verify checks that key/signature/timestamp are valid for (method, path, body).
+// Verify checks that key/signature/timestamp are valid for (method, path, onBehalfOf, body).
 // It returns the AppKey on success so handlers can attribute the request.
-func (v *Verifier) Verify(key, timestamp, signature, method, path string, body []byte) (string, error) {
+// onBehalfOf may be empty for clients that do not send X-On-Behalf-Of-User.
+func (v *Verifier) Verify(key, timestamp, signature, method, path, onBehalfOf string, body []byte) (string, error) {
 	if key == "" || timestamp == "" || signature == "" {
 		return "", errors.New("missing auth headers")
 	}
@@ -50,7 +51,7 @@ func (v *Verifier) Verify(key, timestamp, signature, method, path string, body [
 	if delta < -v.skew || delta > v.skew {
 		return "", errors.New("timestamp outside allowed skew window")
 	}
-	expected := Sign(secret, timestamp, method, path, body)
+	expected := Sign(secret, timestamp, method, path, onBehalfOf, body)
 	if !hmac.Equal([]byte(expected), []byte(signature)) {
 		return "", errors.New("signature mismatch")
 	}
@@ -58,13 +59,17 @@ func (v *Verifier) Verify(key, timestamp, signature, method, path string, body [
 }
 
 // Sign produces the canonical signature for the given inputs.
-func Sign(secret, timestamp, method, path string, body []byte) string {
+// onBehalfOf may be empty string; when empty it is still included as a blank
+// line so the canonical string remains unambiguous.
+func Sign(secret, timestamp, method, path, onBehalfOf string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(timestamp))
 	mac.Write([]byte("\n"))
 	mac.Write([]byte(method))
 	mac.Write([]byte("\n"))
 	mac.Write([]byte(path))
+	mac.Write([]byte("\n"))
+	mac.Write([]byte(onBehalfOf))
 	mac.Write([]byte("\n"))
 	mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil))

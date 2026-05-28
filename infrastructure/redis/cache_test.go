@@ -117,7 +117,7 @@ func (s *stubTemplateRepo) Get(_ context.Context, id uuid.UUID) (domain.Template
 
 func seedTemplate(id uuid.UUID) domain.Template {
 	t, _ := domain.NewTemplate(id, "welcome", domain.ChannelEmail, "en",
-		"Hello {{.Name}}", "Welcome {{.Name}}", nil, 1, time.Now())
+		"Hello {{.Name}}", "Welcome {{.Name}}", nil, 1, 1, time.Now())
 	return t
 }
 

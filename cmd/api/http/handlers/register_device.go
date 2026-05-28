@@ -8,6 +8,7 @@ import (
 	"github.com/example/notification-engine/cmd/api/http/dto"
 	"github.com/example/notification-engine/internal/domain"
 	"github.com/example/notification-engine/internal/service"
+	mw "github.com/example/notification-engine/middleware"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -16,6 +17,10 @@ func (h *Handler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 	uid, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_id", err.Error())
+		return
+	}
+	if err := mw.RequireUserOwnership(r.Context(), uid); err != nil {
+		mapDomainError(w, err)
 		return
 	}
 	var req dto.DeviceRequest

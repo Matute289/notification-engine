@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/example/notification-engine/cmd/api/http/dto"
 	"github.com/example/notification-engine/internal/domain"
 	"github.com/example/notification-engine/internal/service"
 	"github.com/google/uuid"
@@ -36,7 +37,7 @@ func TestGetTemplate_NotFound_404(t *testing.T) {
 
 func TestGetTemplate_HappyPath_200(t *testing.T) {
 	id := uuid.New()
-	tpl := domain.Template{ID: id, Name: "welcome", Channel: domain.ChannelSMS, Body: "Hello!"}
+	tpl := domain.Template{ID: id, Name: "welcome", Channel: domain.ChannelSMS, Body: "Hello!", OwnerUserID: 42}
 	h := &Handler{GetTemplateSvc: &service.GetTemplate{
 		Templates: &templateRepo{t: tpl},
 	}}
@@ -44,8 +45,9 @@ func TestGetTemplate_HappyPath_200(t *testing.T) {
 	r := withURLParam(httptest.NewRequest(http.MethodGet, "/v1/templates/"+id.String(), nil), "id", id.String())
 	h.GetTemplate(w, r)
 	assert.Equal(t, http.StatusOK, w.Code)
-	var got domain.Template
+	var got dto.TemplateView
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&got))
 	assert.Equal(t, id, got.ID)
 	assert.Equal(t, "welcome", got.Name)
+	assert.Equal(t, int64(42), got.OwnerUserID)
 }

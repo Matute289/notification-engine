@@ -35,12 +35,22 @@ type Identity struct {
 	Subject string
 	// Kind is "user" (Clerk JWT) or "service" (HMAC).
 	Kind string
+	// OnBehalfOfUserID is set when Kind=="service" and the X-On-Behalf-Of-User
+	// header is present and valid.
+	OnBehalfOfUserID *int64
 }
 
 // IdentityFromContext retrieves the authenticated Identity from the request context.
 func IdentityFromContext(ctx context.Context) (Identity, bool) {
 	v, ok := ctx.Value(ctxIdentity).(Identity)
 	return v, ok
+}
+
+// ContextWithIdentity returns a new context with the given Identity stored in it.
+// This is primarily intended for use in tests that need to inject an authenticated
+// identity without going through the full HTTP middleware stack.
+func ContextWithIdentity(ctx context.Context, id Identity) context.Context {
+	return withIdentity(ctx, id)
 }
 
 func withIdentity(ctx context.Context, id Identity) context.Context {
@@ -152,17 +162,29 @@ func Authenticate(clerk *auth.ClerkVerifier, hmacVer *auth.Verifier) func(http.H
 				}
 				r.Body = io.NopCloser(bytes.NewReader(body))
 
+				onBehalfOf := r.Header.Get("X-On-Behalf-Of-User")
+
 				key, err := hmacVer.Verify(
 					r.Header.Get(auth.HeaderAppKey),
 					r.Header.Get(auth.HeaderTimestamp),
 					r.Header.Get(auth.HeaderSignature),
-					r.Method, r.URL.Path, body,
+					r.Method, r.URL.Path, onBehalfOf, body,
 				)
 				if err != nil {
 					writeErr(w, http.StatusUnauthorized, "unauthorized")
 					return
 				}
-				ctx := withIdentity(r.Context(), Identity{Subject: key, Kind: "service"})
+
+				id := Identity{Subject: key, Kind: "service"}
+				if onBehalfOf != "" {
+					parsed, parseErr := strconv.ParseInt(onBehalfOf, 10, 64)
+					if parseErr != nil {
+						writeErr(w, http.StatusUnauthorized, "invalid_on_behalf_of")
+						return
+					}
+					id.OnBehalfOfUserID = &parsed
+				}
+				ctx := withIdentity(r.Context(), id)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}

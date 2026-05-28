@@ -19,10 +19,36 @@ func TestRegisterDevice_InvalidID_400(t *testing.T) {
 	assertErrorCode(t, w, "invalid_id")
 }
 
+func TestRegisterDevice_NoIdentity_401(t *testing.T) {
+	// No identity in context → RequireUserOwnership returns ErrUnauthenticated → 401.
+	h := &Handler{RegisterDeviceSvc: &service.RegisterDevice{}}
+	w := httptest.NewRecorder()
+	r := withURLParam(httptest.NewRequest(http.MethodPost, "/v1/users/42/devices", nil), "id", "42")
+	h.RegisterDevice(w, r)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assertErrorCode(t, w, "unauthorized")
+}
+
+func TestRegisterDevice_CrossUser_403(t *testing.T) {
+	// Identity is for user 99 but path user is 42 → ErrForbidden → 403.
+	h := &Handler{RegisterDeviceSvc: &service.RegisterDevice{}}
+	w := httptest.NewRecorder()
+	r := withURLParam(
+		withServiceIdentity(httptest.NewRequest(http.MethodPost, "/v1/users/42/devices", nil), 99),
+		"id", "42",
+	)
+	h.RegisterDevice(w, r)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assertErrorCode(t, w, "forbidden")
+}
+
 func TestRegisterDevice_InvalidJSON_400(t *testing.T) {
 	h := &Handler{RegisterDeviceSvc: &service.RegisterDevice{}}
 	w := httptest.NewRecorder()
-	r := withURLParam(httptest.NewRequest(http.MethodPost, "/v1/users/42/devices", bytes.NewBufferString(`{bad}`)), "id", "42")
+	r := withURLParam(
+		withServiceIdentity(httptest.NewRequest(http.MethodPost, "/v1/users/42/devices", bytes.NewBufferString(`{bad}`)), 42),
+		"id", "42",
+	)
 	h.RegisterDevice(w, r)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assertErrorCode(t, w, "invalid_json")
@@ -32,7 +58,10 @@ func TestRegisterDevice_InvalidChannel_400(t *testing.T) {
 	h := &Handler{RegisterDeviceSvc: &service.RegisterDevice{}}
 	w := httptest.NewRecorder()
 	body := `{"device_token":"tok","channel":"fax"}`
-	r := withURLParam(httptest.NewRequest(http.MethodPost, "/v1/users/42/devices", bytes.NewBufferString(body)), "id", "42")
+	r := withURLParam(
+		withServiceIdentity(httptest.NewRequest(http.MethodPost, "/v1/users/42/devices", bytes.NewBufferString(body)), 42),
+		"id", "42",
+	)
 	h.RegisterDevice(w, r)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assertErrorCode(t, w, "invalid_channel")
@@ -46,7 +75,10 @@ func TestRegisterDevice_NonPushChannel_400(t *testing.T) {
 	}}
 	w := httptest.NewRecorder()
 	body := `{"device_token":"tok","channel":"email"}`
-	r := withURLParam(httptest.NewRequest(http.MethodPost, "/v1/users/42/devices", bytes.NewBufferString(body)), "id", "42")
+	r := withURLParam(
+		withServiceIdentity(httptest.NewRequest(http.MethodPost, "/v1/users/42/devices", bytes.NewBufferString(body)), 42),
+		"id", "42",
+	)
 	h.RegisterDevice(w, r)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assertErrorCode(t, w, "invalid_request")
@@ -59,7 +91,10 @@ func TestRegisterDevice_HappyPath_204(t *testing.T) {
 	}}
 	w := httptest.NewRecorder()
 	body := `{"device_token":"device-token-abc","channel":"push_ios"}`
-	r := withURLParam(httptest.NewRequest(http.MethodPost, "/v1/users/42/devices", bytes.NewBufferString(body)), "id", "42")
+	r := withURLParam(
+		withServiceIdentity(httptest.NewRequest(http.MethodPost, "/v1/users/42/devices", bytes.NewBufferString(body)), 42),
+		"id", "42",
+	)
 	h.RegisterDevice(w, r)
 	assert.Equal(t, http.StatusNoContent, w.Code)
 }
@@ -72,7 +107,10 @@ func TestRegisterDevice_EmptyToken_400(t *testing.T) {
 	}}
 	w := httptest.NewRecorder()
 	body := `{"device_token":"","channel":"push_ios"}`
-	r := withURLParam(httptest.NewRequest(http.MethodPost, "/v1/users/42/devices", bytes.NewBufferString(body)), "id", "42")
+	r := withURLParam(
+		withServiceIdentity(httptest.NewRequest(http.MethodPost, "/v1/users/42/devices", bytes.NewBufferString(body)), 42),
+		"id", "42",
+	)
 	h.RegisterDevice(w, r)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assertErrorCode(t, w, "invalid_request")

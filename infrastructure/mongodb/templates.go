@@ -19,16 +19,17 @@ const collectionTemplates = "notification_templates"
 // templateDoc is the MongoDB wire representation. _id stores the UUID string
 // so the domain uuid.UUID type is preserved without ObjectID translation.
 type templateDoc struct {
-	ID        string    `bson:"_id"`
-	Name      string    `bson:"name"`
-	Channel   string    `bson:"channel"`
-	Locale    string    `bson:"locale"`
-	Subject   string    `bson:"subject"`
-	Body      string    `bson:"body"`
-	MediaURLs []string  `bson:"media_urls,omitempty"`
-	Version   int       `bson:"version"`
-	CreatedAt time.Time `bson:"created_at"`
-	UpdatedAt time.Time `bson:"updated_at"`
+	ID          string    `bson:"_id"`
+	Name        string    `bson:"name"`
+	Channel     string    `bson:"channel"`
+	Locale      string    `bson:"locale"`
+	Subject     string    `bson:"subject"`
+	Body        string    `bson:"body"`
+	MediaURLs   []string  `bson:"media_urls,omitempty"`
+	Version     int       `bson:"version"`
+	OwnerUserID int64     `bson:"owner_user_id"`
+	CreatedAt   time.Time `bson:"created_at"`
+	UpdatedAt   time.Time `bson:"updated_at"`
 }
 
 // TemplateRepository implements port.TemplateRepository against MongoDB.
@@ -37,17 +38,18 @@ type TemplateRepository struct {
 }
 
 // NewTemplateRepository creates the repository and ensures a unique index on
-// (name, channel, locale, version) — the same constraint that existed in Postgres.
+// (owner_user_id, name, channel, locale, version).
 func NewTemplateRepository(db *mongo.Database) (*TemplateRepository, error) {
 	col := db.Collection(collectionTemplates)
 	idx := mongo.IndexModel{
 		Keys: bson.D{
+			{Key: "owner_user_id", Value: 1},
 			{Key: "name", Value: 1},
 			{Key: "channel", Value: 1},
 			{Key: "locale", Value: 1},
 			{Key: "version", Value: 1},
 		},
-		Options: options.Index().SetUnique(true).SetName("name_channel_locale_version"),
+		Options: options.Index().SetUnique(true).SetName("owner_user_id_name_channel_locale_version"),
 	}
 	if _, err := col.Indexes().CreateOne(context.Background(), idx); err != nil {
 		return nil, fmt.Errorf("mongodb: ensure template index: %w", err)
@@ -59,16 +61,17 @@ var _ port.TemplateRepository = (*TemplateRepository)(nil)
 
 func (r *TemplateRepository) Create(ctx context.Context, t domain.Template) error {
 	doc := templateDoc{
-		ID:        t.ID.String(),
-		Name:      t.Name,
-		Channel:   string(t.Channel),
-		Locale:    t.Locale,
-		Subject:   t.Subject,
-		Body:      t.Body,
-		MediaURLs: t.MediaURLs,
-		Version:   t.Version,
-		CreatedAt: t.CreatedAt,
-		UpdatedAt: t.UpdatedAt,
+		ID:          t.ID.String(),
+		Name:        t.Name,
+		Channel:     string(t.Channel),
+		Locale:      t.Locale,
+		Subject:     t.Subject,
+		Body:        t.Body,
+		MediaURLs:   t.MediaURLs,
+		Version:     t.Version,
+		OwnerUserID: t.OwnerUserID,
+		CreatedAt:   t.CreatedAt,
+		UpdatedAt:   t.UpdatedAt,
 	}
 	if _, err := r.col.InsertOne(ctx, doc); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
@@ -90,15 +93,16 @@ func (r *TemplateRepository) Get(ctx context.Context, id uuid.UUID) (domain.Temp
 		return domain.Template{}, fmt.Errorf("mongodb: get template: %w", err)
 	}
 	return domain.Template{
-		ID:        uuid.MustParse(doc.ID),
-		Name:      doc.Name,
-		Channel:   domain.Channel(doc.Channel),
-		Locale:    doc.Locale,
-		Subject:   doc.Subject,
-		Body:      doc.Body,
-		MediaURLs: doc.MediaURLs,
-		Version:   doc.Version,
-		CreatedAt: doc.CreatedAt,
-		UpdatedAt: doc.UpdatedAt,
+		ID:          uuid.MustParse(doc.ID),
+		Name:        doc.Name,
+		Channel:     domain.Channel(doc.Channel),
+		Locale:      doc.Locale,
+		Subject:     doc.Subject,
+		Body:        doc.Body,
+		MediaURLs:   doc.MediaURLs,
+		Version:     doc.Version,
+		OwnerUserID: doc.OwnerUserID,
+		CreatedAt:   doc.CreatedAt,
+		UpdatedAt:   doc.UpdatedAt,
 	}, nil
 }

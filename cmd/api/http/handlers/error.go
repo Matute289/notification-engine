@@ -17,6 +17,8 @@ func mapDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrInvalidInput),
 		errors.Is(err, domain.ErrInvalidStatusTransition):
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	case errors.Is(err, domain.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden", err.Error())
 	case errors.Is(err, domain.ErrOptedOut):
 		writeError(w, http.StatusForbidden, "opted_out", err.Error())
 	case errors.Is(err, domain.ErrRateLimited):

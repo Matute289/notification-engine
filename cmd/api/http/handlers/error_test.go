@@ -24,6 +24,7 @@ func TestMapDomainError(t *testing.T) {
 		{"not found",                domain.ErrNotFound,                http.StatusNotFound,          "not_found",       ""},
 		{"invalid input",            domain.ErrInvalidInput,            http.StatusBadRequest,        "invalid_request", ""},
 		{"invalid transition",       domain.ErrInvalidStatusTransition, http.StatusBadRequest,        "invalid_request", ""},
+		{"forbidden",                domain.ErrForbidden,               http.StatusForbidden,         "forbidden",       ""},
 		{"opted out",                domain.ErrOptedOut,                http.StatusForbidden,         "opted_out",       ""},
 		{"rate limited",             domain.ErrRateLimited,             http.StatusTooManyRequests,   "rate_limited",    "3600"},
 		{"unauthenticated",          domain.ErrUnauthenticated,         http.StatusUnauthorized,      "unauthorized",    ""},

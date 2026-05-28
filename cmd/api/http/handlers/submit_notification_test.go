@@ -131,6 +131,28 @@ func TestSubmitNotification_Duplicate_200(t *testing.T) {
 	assert.Equal(t, existing.ID, resp.NotificationID)
 }
 
+func TestSubmitNotification_CrossUser_403(t *testing.T) {
+	// HMAC service acting on behalf of user 42 tries to submit for user 99 → 403.
+	uid := int64(42)
+	h := buildSubmitHandler(
+		&notifRepo{},
+		&userRepo{},
+		&deduper{claimed: true},
+		&limiter{allowed: true},
+	)
+	w := httptest.NewRecorder()
+	body, _ := json.Marshal(map[string]any{
+		"event_id":  "evt-cross",
+		"channel":   "sms",
+		"recipient": map[string]any{"user_id": int64(99)},
+		"body":      "Hello!",
+	})
+	req := withServiceIdentity(httptest.NewRequest(http.MethodPost, "/v1/notifications", bytes.NewReader(body)), uid)
+	h.SubmitNotification(w, req)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assertErrorCode(t, w, "forbidden")
+}
+
 func TestSubmitNotification_OptedOut_403(t *testing.T) {
 	uid := int64(42)
 	h := buildSubmitHandler(
@@ -146,7 +168,8 @@ func TestSubmitNotification_OptedOut_403(t *testing.T) {
 		"recipient": map[string]any{"user_id": uid},
 		"body":      "Hello!",
 	})
-	h.SubmitNotification(w, httptest.NewRequest(http.MethodPost, "/v1/notifications", bytes.NewReader(body)))
+	req := withServiceIdentity(httptest.NewRequest(http.MethodPost, "/v1/notifications", bytes.NewReader(body)), uid)
+	h.SubmitNotification(w, req)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	assertErrorCode(t, w, "opted_out")
 }
@@ -166,7 +189,8 @@ func TestSubmitNotification_RateLimited_429(t *testing.T) {
 		"recipient": map[string]any{"user_id": uid},
 		"body":      "Hello!",
 	})
-	h.SubmitNotification(w, httptest.NewRequest(http.MethodPost, "/v1/notifications", bytes.NewReader(body)))
+	req := withServiceIdentity(httptest.NewRequest(http.MethodPost, "/v1/notifications", bytes.NewReader(body)), uid)
+	h.SubmitNotification(w, req)
 	assert.Equal(t, http.StatusTooManyRequests, w.Code)
 	assert.Equal(t, "3600", w.Header().Get("Retry-After"))
 	assertErrorCode(t, w, "rate_limited")

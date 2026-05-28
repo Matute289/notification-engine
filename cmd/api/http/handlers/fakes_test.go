@@ -7,6 +7,7 @@ import (
 
 	"github.com/example/notification-engine/internal/domain"
 	"github.com/example/notification-engine/internal/port"
+	mw "github.com/example/notification-engine/middleware"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
@@ -147,4 +148,14 @@ func withURLParam(r *http.Request, key, value string) *http.Request {
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add(key, value)
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
+}
+
+// withServiceIdentity injects a service identity with the given onBehalfOfUserID
+// into the request context. Pass onBehalfOfUserID=0 to leave OnBehalfOfUserID nil.
+func withServiceIdentity(r *http.Request, onBehalfOfUserID int64) *http.Request {
+	id := mw.Identity{Subject: "test-app", Kind: "service"}
+	if onBehalfOfUserID != 0 {
+		id.OnBehalfOfUserID = &onBehalfOfUserID
+	}
+	return r.WithContext(mw.ContextWithIdentity(r.Context(), id))
 }

@@ -1,0 +1,1 @@
+ALTER TABLE notification_templates ADD COLUMN IF NOT EXISTS owner_user_id BIGINT NOT NULL DEFAULT 0;
