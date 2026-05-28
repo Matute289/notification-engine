@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/example/notification-engine/cmd/api/http/dto"
+	"github.com/example/notification-engine/internal/domain"
 	"github.com/example/notification-engine/internal/service"
 )
 
@@ -24,4 +26,20 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func templateToView(t domain.Template) dto.TemplateView {
+	return dto.TemplateView{
+		ID:          t.ID,
+		Name:        t.Name,
+		Channel:     string(t.Channel),
+		Locale:      t.Locale,
+		Subject:     t.Subject,
+		Body:        t.Body,
+		MediaURLs:   t.MediaURLs,
+		Version:     t.Version,
+		OwnerUserID: t.OwnerUserID,
+		CreatedAt:   t.CreatedAt,
+		UpdatedAt:   t.UpdatedAt,
+	}
 }

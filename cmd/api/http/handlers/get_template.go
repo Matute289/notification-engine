@@ -3,7 +3,7 @@ package handlers
 import (
 	"net/http"
 
-	"github.com/example/notification-engine/cmd/api/http/dto"
+	mw "github.com/example/notification-engine/middleware"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
@@ -20,17 +20,9 @@ func (h *Handler) GetTemplate(w http.ResponseWriter, r *http.Request) {
 		mapDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, dto.TemplateView{
-		ID:          t.ID,
-		Name:        t.Name,
-		Channel:     string(t.Channel),
-		Locale:      t.Locale,
-		Subject:     t.Subject,
-		Body:        t.Body,
-		MediaURLs:   t.MediaURLs,
-		Version:     t.Version,
-		OwnerUserID: t.OwnerUserID,
-		CreatedAt:   t.CreatedAt,
-		UpdatedAt:   t.UpdatedAt,
-	})
+	if err := mw.RequireUserOwnership(r.Context(), t.OwnerUserID); err != nil {
+		mapDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, templateToView(t))
 }

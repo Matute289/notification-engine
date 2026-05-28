@@ -12,9 +12,9 @@ import (
 
 // CreateTemplate handles POST /v1/templates.
 func (h *Handler) CreateTemplate(w http.ResponseWriter, r *http.Request) {
-	id, ok := mw.IdentityFromContext(r.Context())
-	if !ok || id.Kind != "service" || id.OnBehalfOfUserID == nil {
-		mapDomainError(w, domain.ErrForbidden)
+	ownerID, err := mw.RequireServiceIdentity(r.Context())
+	if err != nil {
+		mapDomainError(w, err)
 		return
 	}
 
@@ -31,23 +31,11 @@ func (h *Handler) CreateTemplate(w http.ResponseWriter, r *http.Request) {
 	t, err := h.CreateTemplateSvc.Execute(r.Context(), service.CreateTemplateInput{
 		Name: req.Name, Channel: channel, Locale: req.Locale,
 		Subject: req.Subject, Body: req.Body, MediaURLs: req.MediaURLs, Version: req.Version,
-		OwnerUserID: *id.OnBehalfOfUserID,
+		OwnerUserID: ownerID,
 	})
 	if err != nil {
 		mapDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, dto.TemplateView{
-		ID:          t.ID,
-		Name:        t.Name,
-		Channel:     string(t.Channel),
-		Locale:      t.Locale,
-		Subject:     t.Subject,
-		Body:        t.Body,
-		MediaURLs:   t.MediaURLs,
-		Version:     t.Version,
-		OwnerUserID: t.OwnerUserID,
-		CreatedAt:   t.CreatedAt,
-		UpdatedAt:   t.UpdatedAt,
-	})
+	writeJSON(w, http.StatusCreated, templateToView(t))
 }

@@ -38,6 +38,9 @@ func (h *Handler) SubmitNotification(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ownership is enforced only when the notification targets a known user.
+	// Notifications addressed to raw email / phone / device-token have no
+	// user_id to validate against, so callers are trusted at the service level.
 	if req.Recipient.UserID != nil {
 		if err := mw.RequireUserOwnership(r.Context(), *req.Recipient.UserID); err != nil {
 			mapDomainError(w, err)

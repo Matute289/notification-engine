@@ -40,14 +40,14 @@ func TestCreateTemplate_HappyPath_201(t *testing.T) {
 	assert.Equal(t, int64(42), t2.OwnerUserID)
 }
 
-func TestCreateTemplate_NoIdentity_403(t *testing.T) {
+func TestCreateTemplate_NoIdentity_401(t *testing.T) {
 	h := &Handler{CreateTemplateSvc: &service.CreateTemplate{}}
 	w := httptest.NewRecorder()
 	body := `{"name":"welcome","channel":"sms","body":"Hello!","version":1}`
 	r := httptest.NewRequest(http.MethodPost, "/v1/templates", bytes.NewBufferString(body))
 	h.CreateTemplate(w, r)
-	assert.Equal(t, http.StatusForbidden, w.Code)
-	assertErrorCode(t, w, "forbidden")
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assertErrorCode(t, w, "unauthorized")
 }
 
 func TestCreateTemplate_ServiceNoOnBehalfOf_403(t *testing.T) {

@@ -157,7 +157,7 @@ func Authenticate(clerk *auth.ClerkVerifier, hmacVer *auth.Verifier) func(http.H
 			if hmacVer != nil {
 				body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 				if err != nil {
-					writeErr(w, http.StatusBadRequest, "invalid body")
+					writeErr(w, http.StatusBadRequest, "invalid_body")
 					return
 				}
 				r.Body = io.NopCloser(bytes.NewReader(body))
@@ -179,7 +179,7 @@ func Authenticate(clerk *auth.ClerkVerifier, hmacVer *auth.Verifier) func(http.H
 				if onBehalfOf != "" {
 					parsed, parseErr := strconv.ParseInt(onBehalfOf, 10, 64)
 					if parseErr != nil {
-						writeErr(w, http.StatusUnauthorized, "invalid_on_behalf_of")
+						writeErr(w, http.StatusBadRequest, "invalid_on_behalf_of")
 						return
 					}
 					id.OnBehalfOfUserID = &parsed
@@ -205,10 +205,10 @@ func extractBearer(r *http.Request) string {
 	return ""
 }
 
-func writeErr(w http.ResponseWriter, status int, msg string) {
+func writeErr(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_, _ = io.WriteString(w, `{"error":"`+msg+`"}`)
+	_, _ = io.WriteString(w, `{"code":"`+code+`","message":"`+code+`"}`)
 }
 
 // AppKeyRateLimit caps the global request rate for one (authenticated) app

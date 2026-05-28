@@ -42,7 +42,10 @@ func TestGetTemplate_HappyPath_200(t *testing.T) {
 		Templates: &templateRepo{t: tpl},
 	}}
 	w := httptest.NewRecorder()
-	r := withURLParam(httptest.NewRequest(http.MethodGet, "/v1/templates/"+id.String(), nil), "id", id.String())
+	r := withURLParam(
+		withServiceIdentity(httptest.NewRequest(http.MethodGet, "/v1/templates/"+id.String(), nil), 42),
+		"id", id.String(),
+	)
 	h.GetTemplate(w, r)
 	assert.Equal(t, http.StatusOK, w.Code)
 	var got dto.TemplateView
@@ -50,4 +53,30 @@ func TestGetTemplate_HappyPath_200(t *testing.T) {
 	assert.Equal(t, id, got.ID)
 	assert.Equal(t, "welcome", got.Name)
 	assert.Equal(t, int64(42), got.OwnerUserID)
+}
+
+func TestGetTemplate_NoIdentity_401(t *testing.T) {
+	id := uuid.New()
+	tpl := domain.Template{ID: id, Name: "welcome", Channel: domain.ChannelSMS, Body: "Hello!", OwnerUserID: 42}
+	h := &Handler{GetTemplateSvc: &service.GetTemplate{Templates: &templateRepo{t: tpl}}}
+	w := httptest.NewRecorder()
+	r := withURLParam(httptest.NewRequest(http.MethodGet, "/v1/templates/"+id.String(), nil), "id", id.String())
+	h.GetTemplate(w, r)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assertErrorCode(t, w, "unauthorized")
+}
+
+func TestGetTemplate_CrossOwner_403(t *testing.T) {
+	id := uuid.New()
+	tpl := domain.Template{ID: id, Name: "welcome", Channel: domain.ChannelSMS, Body: "Hello!", OwnerUserID: 42}
+	h := &Handler{GetTemplateSvc: &service.GetTemplate{Templates: &templateRepo{t: tpl}}}
+	w := httptest.NewRecorder()
+	// Identity is on behalf of user 99 but template belongs to user 42.
+	r := withURLParam(
+		withServiceIdentity(httptest.NewRequest(http.MethodGet, "/v1/templates/"+id.String(), nil), 99),
+		"id", id.String(),
+	)
+	h.GetTemplate(w, r)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assertErrorCode(t, w, "forbidden")
 }
