@@ -116,8 +116,12 @@ func run() error {
 	get := &service.GetNotification{Notifications: notificationsRepo}
 	createTemplate := &service.CreateTemplate{Templates: templatesRepo, Clock: clock}
 	getTemplate := &service.GetTemplate{Templates: templatesRepo}
+	updateTemplate := &service.UpdateTemplate{Templates: templatesRepo, Clock: clock}
+	deleteTemplate := &service.DeleteTemplate{Templates: templatesRepo}
+	listTemplates := &service.ListTemplates{Templates: templatesRepo}
 	updateSetting := &service.UpdateSetting{Users: usersRepo, Clock: clock}
 	registerDevice := &service.RegisterDevice{Users: usersRepo, Clock: clock}
+	deleteDevice := &service.DeleteDevice{Users: usersRepo}
 
 	// --- auth ---
 	clerkVerifier, err := auth.NewClerkVerifier(ctx, cfg.ClerkIssuer, cfg.ClerkAuthorizedParties)
@@ -139,8 +143,12 @@ func run() error {
 		GetSvc:            get,
 		CreateTemplateSvc: createTemplate,
 		GetTemplateSvc:    getTemplate,
+		UpdateTemplateSvc: updateTemplate,
+		DeleteTemplateSvc: deleteTemplate,
+		ListTemplatesSvc:  listTemplates,
 		UpdateSettingSvc:  updateSetting,
 		RegisterDeviceSvc: registerDevice,
+		DeleteDeviceSvc:   deleteDevice,
 	}
 
 	srv := &http.Server{

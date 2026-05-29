@@ -60,6 +60,7 @@ func (h *Handler) SubmitNotification(w http.ResponseWriter, r *http.Request) {
 			Email:       email,
 			Phone:       phone,
 			DeviceToken: domain.DeviceToken(req.Recipient.DeviceToken),
+			MessagingID: req.Recipient.MessagingID,
 		},
 	}
 

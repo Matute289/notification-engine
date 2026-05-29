@@ -199,6 +199,17 @@ func (f *fakeUsers) UpsertSetting(_ context.Context, s domain.Setting) error {
 	return nil
 }
 
+func (f *fakeUsers) DeleteDevice(_ context.Context, userID int64, ch domain.Channel, token domain.DeviceToken) error {
+	devices := f.devices[userID][ch]
+	for i, d := range devices {
+		if d.DeviceToken == token {
+			f.devices[userID][ch] = append(devices[:i], devices[i+1:]...)
+			return nil
+		}
+	}
+	return domain.ErrNotFound
+}
+
 type fakeTemplates struct{ tpls map[uuid.UUID]domain.Template }
 
 func newFakeTemplates() *fakeTemplates {
@@ -216,6 +227,36 @@ func (f *fakeTemplates) Get(_ context.Context, id uuid.UUID) (domain.Template, e
 		return domain.Template{}, domain.ErrNotFound
 	}
 	return t, nil
+}
+
+func (f *fakeTemplates) Update(_ context.Context, t domain.Template) error {
+	if _, ok := f.tpls[t.ID]; !ok {
+		return domain.ErrNotFound
+	}
+	f.tpls[t.ID] = t
+	return nil
+}
+
+func (f *fakeTemplates) Delete(_ context.Context, id uuid.UUID) error {
+	if _, ok := f.tpls[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(f.tpls, id)
+	return nil
+}
+
+func (f *fakeTemplates) List(_ context.Context, ownerUserID int64, channel *domain.Channel) ([]domain.Template, error) {
+	var out []domain.Template
+	for _, t := range f.tpls {
+		if t.OwnerUserID != ownerUserID {
+			continue
+		}
+		if channel != nil && t.Channel != *channel {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, nil
 }
 
 type fakeRenderer struct{ subject, body string }

@@ -68,11 +68,12 @@ type Recipient struct {
 	Email       Email       `json:"email,omitempty"`
 	Phone       Phone       `json:"phone_number,omitempty"`
 	DeviceToken DeviceToken `json:"device_token,omitempty"`
+	MessagingID string      `json:"messaging_id,omitempty"`
 }
 
 // Validate checks that the recipient carries enough information for the channel.
 func (r Recipient) Validate(c Channel) error {
-	if r.UserID == nil && r.Email.Empty() && r.Phone.Empty() && r.DeviceToken.Empty() {
+	if r.UserID == nil && r.Email.Empty() && r.Phone.Empty() && r.DeviceToken.Empty() && r.MessagingID == "" {
 		return fmt.Errorf("%w: recipient must carry user_id or a raw destination", ErrInvalidInput)
 	}
 	if r.UserID != nil {
@@ -91,6 +92,14 @@ func (r Recipient) Validate(c Channel) error {
 	case ChannelPushIOS, ChannelPushAndroid:
 		if r.DeviceToken.Empty() {
 			return fmt.Errorf("%w: push channel needs a device token", ErrInvalidInput)
+		}
+	case ChannelWhatsApp:
+		if r.Phone.Empty() {
+			return fmt.Errorf("%w: whatsapp channel needs a phone", ErrInvalidInput)
+		}
+	case ChannelTelegram, ChannelLine, ChannelFacebookMessenger:
+		if r.MessagingID == "" {
+			return fmt.Errorf("%w: %s channel needs a messaging_id", ErrInvalidInput, c)
 		}
 	}
 	return nil
