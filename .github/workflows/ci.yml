@@ -4,7 +4,9 @@ on:
   push:
     branches: [main, development]
   pull_request:
-    branches: [main, development]
+    # Also runs on PRs targeting render so render-specific changes
+    # (render.yaml, DEPLOY_RENDER.md) go through CI before merging.
+    branches: [main, development, render]
 
 jobs:
   build-and-test:
