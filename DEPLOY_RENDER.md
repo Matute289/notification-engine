@@ -93,43 +93,49 @@ feature branch
 | Action | Who | How |
 | ------ | --- | --- |
 | Sync `render` from `main` | Automatic | `sync-render.yml` runs on every push to `main` |
-| Tag + deploy | Manual | GitHub → Actions → **Release to Render** → enter version → Run |
+| Deploy to Render | Automatic | Render Auto-Deploy fires on every push to `render` |
+| Create release tag | Manual | GitHub → Actions → **Release to Render** → enter version → Run |
 
-### Setting up the Deploy Hook
+### Configuring Render services to track the `render` branch
 
-The `release-render.yml` workflow calls a Render Deploy Hook URL to trigger the
-deploy. To wire it up:
+Do this once per service (1 API + 6 workers) in the Render dashboard:
 
-1. Render dashboard → `notification-api` → **Settings → Deploy Hook** → copy the URL.
-2. GitHub repo → **Settings → Secrets → Actions → New repository secret**:
-   - Name: `RENDER_DEPLOY_HOOK_URL`
-   - Value: the URL from step 1.
-3. In Render, **disable "Auto-Deploy"** on the `render` branch for all services so
-   that pushes from `sync-render.yml` do not trigger redundant deploys — the
-   `Release to Render` workflow is the sole deploy trigger.
+1. Render dashboard → service → **Settings**
+2. **"Build & Deploy"** section → **"Branch"**: change from `main` to `render`
+3. Confirm **"Auto-Deploy"** is set to **"Yes"**
+4. Save
 
-### Triggering a release
+From that point, every push to `render` (which `sync-render.yml` does automatically
+on each merge to `main`) triggers a rebuild of all services. No secrets or Deploy
+Hooks required.
+
+### Creating a release tag
+
+The `Release to Render` workflow marks a specific deployed commit with an immutable
+tag. The deploy itself is already running (or done) via Auto-Deploy by the time you
+run this.
 
 1. GitHub → **Actions → Release to Render → Run workflow**.
-2. Enter the semantic version (e.g. `1.2.3`). A tag `render-v1.2.3` will be created
-   on the `render` branch and the Deploy Hook will be called.
-3. The workflow runs `go test -race -count=1 ./...` on the `render` HEAD before
-   tagging — a failing test aborts the release.
+2. Enter the semantic version (e.g. `1.2.3`). The workflow will:
+   - Run `go test -race -count=1 ./...` on the `render` HEAD — a failing test aborts.
+   - Create and push the tag `render-v1.2.3` on the `render` branch.
 
 ---
 
 ## Branch protection for `render`
 
-To prevent accidental direct pushes:
+The `render` branch is configured with:
+- **No force pushes** — prevents rewriting deployed history.
+- **No deletions** — prevents accidental branch removal.
 
-1. GitHub → **Settings → Branches → Add rule** → Branch name pattern: `render`.
-2. Enable **"Restrict who can push to matching branches"**.
-3. Add the GitHub Actions bot (`github-actions[bot]`) or a dedicated PAT user as
-   the only allowed pusher.
+> **Personal repos limitation:** GitHub does not allow restricting push access to
+> specific users/bots on personal (non-organization) repositories. The protection
+> above relies on convention: only `sync-render.yml` should push to `render`.
+> If you need stricter enforcement, move the repo to a GitHub organization.
 
-> If branch protection blocks the `GITHUB_TOKEN` used by `sync-render.yml`, create
-> a fine-grained PAT with **Contents: Write** permission, store it as the
-> `SYNC_TOKEN` secret, and replace `secrets.GITHUB_TOKEN` in `sync-render.yml`.
+> If branch protection ever blocks `sync-render.yml`, create a fine-grained PAT
+> with **Contents: Write** permission, store it as secret `SYNC_TOKEN`, and replace
+> `secrets.GITHUB_TOKEN` in `sync-render.yml`.
 
 ---
 
@@ -137,4 +143,4 @@ To prevent accidental direct pushes:
 
 If services were previously tracking `main`, update each one:
 
-Render dashboard → service → **Settings → Branch** → change to `render` → Save.
+Render dashboard → service → **Settings → Branch** → change to `render` → **Auto-Deploy: Yes** → Save.
