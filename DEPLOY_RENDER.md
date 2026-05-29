@@ -21,6 +21,10 @@ This guide covers deploying the Notification Engine to **Render** using the
 | `worker-push-android` | Background worker (Docker) | Consumes `push_android` queue |
 | `worker-sms` | Background worker (Docker) | Consumes `sms` queue |
 | `worker-email` | Background worker (Docker) | Consumes `email` queue |
+| `worker-telegram` | Background worker (Docker) | Consumes `telegram` queue |
+| `worker-whatsapp` | Background worker (Docker) | Consumes `whatsapp` queue |
+| `worker-line` | Background worker (Docker) | Consumes `line` queue |
+| `worker-facebook-messenger` | Background worker (Docker) | Consumes `facebook_messenger` queue |
 | `janitor` | Background worker (Docker) | Rescues stuck `in_flight` notifications |
 | `outbox-relay` | Background worker (Docker) | Drains `notification_outbox` → RabbitMQ |
 | `worker-shared` | Env var group | Shared config inherited by all workers |
@@ -63,14 +67,20 @@ Before applying the Blueprint you need connection strings for RabbitMQ and Mongo
    - `CLERK_ISSUER` — e.g. `https://<slug>.clerk.accounts.dev` (leave empty for HMAC-only)
    - `CLERK_AUTHORIZED_PARTIES` — comma-separated allowed origins (optional)
    - `APP_CLIENTS` — `key1:secret1,key2:secret2,...` (optional when using Clerk JWT)
+
+   **Social channel credentials** (only required when `PROVIDER_MODE=real`; leave blank for mock mode):
+   - `TELEGRAM_BOT_TOKEN` — from [@BotFather](https://t.me/BotFather)
+   - `WHATSAPP_PHONE_NUMBER_ID` + `WHATSAPP_ACCESS_TOKEN` — from Meta Cloud API
+   - `LINE_CHANNEL_ACCESS_TOKEN` — from [LINE Developers console](https://developers.line.biz)
+   - `FB_PAGE_ACCESS_TOKEN` — from Meta Graph API
 3. Click **Apply**.
 
 ### 3. Verify the deployment
 
 - **API** (`notification-api`): check the public URL → `GET /healthz` should return
   `{"status":"ok"}`.
-- **Workers**: all 6 background workers should show status "running" on the Render
-  services page.
+- **Workers**: all 10 background workers (4 push/sms/email + 4 social + janitor + outbox-relay)
+  should show status "running" on the Render services page.
 
 > **Known limitation — `envVarGroups` and `sync: false`**: Render's Blueprint form
 > does not surface `sync: false` variables that live only inside `envVarGroups`. After
@@ -98,7 +108,7 @@ feature branch
 
 ### Configuring Render services to track the `render` branch
 
-Do this once per service (1 API + 6 workers) in the Render dashboard:
+Do this once per service (1 API + 10 workers) in the Render dashboard:
 
 1. Render dashboard → service → **Settings**
 2. **"Build & Deploy"** section → **"Branch"**: change from `main` to `render`
@@ -144,3 +154,47 @@ The `render` branch is configured with:
 If services were previously tracking `main`, update each one:
 
 Render dashboard → service → **Settings → Branch** → change to `render` → **Auto-Deploy: Yes** → Save.
+
+---
+
+## Running migrations on Render
+
+Migrations must be run manually against the Render Postgres instance after each
+deploy that introduces schema changes (new migration files in `migrations/`).
+
+### One-off migration job (recommended)
+
+Use Render's **one-off jobs** feature to run goose against the production database:
+
+1. Render dashboard → **New → Job** (or use the existing `migrate` service if defined).
+2. Environment: set `POSTGRES_DSN` to the production connection string
+   (`fromDatabase: notification-postgres / connectionString`).
+3. Command: `goose -dir /migrations postgres "$POSTGRES_DSN" up`
+
+Alternatively, use the Render shell on any running service:
+
+```bash
+# From the Render dashboard → service → Shell
+goose -dir /migrations postgres "$POSTGRES_DSN" up
+```
+
+### Migrations included in this release
+
+| Migration | Description |
+|-----------|-------------|
+| `0006_social_channels.sql` | Extends `notification_settings` channel CHECK constraint to include `telegram`, `whatsapp`, `line`, `facebook_messenger` |
+
+> **Note:** Migrations `0001–0005` should already be applied if this is an existing
+> deployment. Migration `0006` is the only new one in this release.
+> If starting fresh, all 6 migrations run automatically via goose in order.
+
+### Verifying applied migrations
+
+```sql
+-- Connect to production Postgres and run:
+SELECT version_id, is_applied, tstamp
+FROM goose_db_version
+ORDER BY version_id;
+```
+
+Expected: rows 1–6 all with `is_applied = true`.

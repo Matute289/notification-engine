@@ -47,6 +47,8 @@ envVarGroups:
         value: "5"
       - key: RATELIMIT_EMAIL_PER_HOUR
         value: "10"
+      - key: RATELIMIT_SOCIAL_PER_HOUR
+        value: "10"   # applies to telegram, whatsapp, line, facebook_messenger
       - key: JANITOR_INTERVAL
         value: 30s
       - key: JANITOR_STUCK_THRESHOLD
@@ -205,6 +207,117 @@ services:
           property: connectionString
       - key: WORKER_CHANNEL
         value: email
+
+  # ─── Social channel workers ───────────────────────────────────────
+  # These workers use PROVIDER_MODE=mock by default (inherited from worker-shared).
+  # Set PROVIDER_MODE=real and supply the sync:false credentials below to use
+  # live messaging APIs. Credentials are optional — leave blank for mock mode.
+
+  - type: worker
+    name: worker-telegram
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.worker
+    branch: render
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+      - key: RABBITMQ_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: connectionString
+      - key: WORKER_CHANNEL
+        value: telegram
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false   # required when PROVIDER_MODE=real — from https://t.me/BotFather
+
+  - type: worker
+    name: worker-whatsapp
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.worker
+    branch: render
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+      - key: RABBITMQ_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: connectionString
+      - key: WORKER_CHANNEL
+        value: whatsapp
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false   # required when PROVIDER_MODE=real — Meta Cloud API phone number ID
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false   # required when PROVIDER_MODE=real — Meta permanent access token
+
+  - type: worker
+    name: worker-line
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.worker
+    branch: render
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+      - key: RABBITMQ_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: connectionString
+      - key: WORKER_CHANNEL
+        value: line
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false   # required when PROVIDER_MODE=real — LINE Messaging API channel token
+
+  - type: worker
+    name: worker-facebook-messenger
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.worker
+    branch: render
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+      - key: RABBITMQ_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: connectionString
+      - key: WORKER_CHANNEL
+        value: facebook_messenger
+      - key: FB_PAGE_ACCESS_TOKEN
+        sync: false   # required when PROVIDER_MODE=real — Meta Graph API page token
 
   # ─── Janitor ──────────────────────────────────────────────────────
   - type: worker
