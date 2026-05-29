@@ -51,6 +51,14 @@ func TestRecipient_Validate(t *testing.T) {
 		{"sms happy", ChannelSMS, Recipient{Phone: "+15551234567"}, false},
 		{"push needs token", ChannelPushIOS, Recipient{DeviceToken: ""}, true},
 		{"push happy", ChannelPushIOS, Recipient{DeviceToken: "abc"}, false},
+		{"whatsapp needs phone", ChannelWhatsApp, Recipient{}, true},
+		{"whatsapp happy", ChannelWhatsApp, Recipient{Phone: "+15551234567"}, false},
+		{"telegram needs messaging_id", ChannelTelegram, Recipient{}, true},
+		{"telegram happy", ChannelTelegram, Recipient{MessagingID: "123456789"}, false},
+		{"line needs messaging_id", ChannelLine, Recipient{}, true},
+		{"line happy", ChannelLine, Recipient{MessagingID: "U1234567890"}, false},
+		{"fbmessenger needs messaging_id", ChannelFacebookMessenger, Recipient{}, true},
+		{"fbmessenger happy", ChannelFacebookMessenger, Recipient{MessagingID: "987654321"}, false},
 	}
 	for _, c := range cases {
 		err := c.r.Validate(c.ch)

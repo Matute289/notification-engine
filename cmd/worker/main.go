@@ -19,10 +19,14 @@ import (
 	"github.com/example/notification-engine/cmd/worker/consumer"
 	"github.com/example/notification-engine/infrastructure/postgres"
 	"github.com/example/notification-engine/infrastructure/provider/apns"
+	"github.com/example/notification-engine/infrastructure/provider/fbmessenger"
 	"github.com/example/notification-engine/infrastructure/provider/fcm"
+	"github.com/example/notification-engine/infrastructure/provider/line"
 	"github.com/example/notification-engine/infrastructure/provider/mock"
 	"github.com/example/notification-engine/infrastructure/provider/sendgrid"
+	"github.com/example/notification-engine/infrastructure/provider/telegram"
 	"github.com/example/notification-engine/infrastructure/provider/twilio"
+	"github.com/example/notification-engine/infrastructure/provider/whatsapp"
 	"github.com/example/notification-engine/infrastructure/rabbitmq"
 	"github.com/example/notification-engine/internal/domain"
 	"github.com/example/notification-engine/internal/platform/config"
@@ -153,6 +157,26 @@ func buildProvider(cfg config.Config, log *slog.Logger) (port.NotificationProvid
 			FromEmail: cfg.SendGridFromEmail,
 			FromName:  cfg.SendGridFromName,
 		})
+	case domain.ChannelTelegram:
+		if cfg.TelegramBotToken == "" {
+			return nil, fmt.Errorf("telegram: TELEGRAM_BOT_TOKEN required for PROVIDER_MODE=real")
+		}
+		return telegram.New(telegram.Config{BotToken: cfg.TelegramBotToken})
+	case domain.ChannelWhatsApp:
+		if cfg.WhatsAppPhoneNumberID == "" || cfg.WhatsAppAccessToken == "" {
+			return nil, fmt.Errorf("whatsapp: WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_ACCESS_TOKEN required for PROVIDER_MODE=real")
+		}
+		return whatsapp.New(whatsapp.Config{PhoneNumberID: cfg.WhatsAppPhoneNumberID, AccessToken: cfg.WhatsAppAccessToken})
+	case domain.ChannelLine:
+		if cfg.LineChannelAccessToken == "" {
+			return nil, fmt.Errorf("line: LINE_CHANNEL_ACCESS_TOKEN required for PROVIDER_MODE=real")
+		}
+		return line.New(line.Config{ChannelAccessToken: cfg.LineChannelAccessToken})
+	case domain.ChannelFacebookMessenger:
+		if cfg.FBPageAccessToken == "" {
+			return nil, fmt.Errorf("fbmessenger: FB_PAGE_ACCESS_TOKEN required for PROVIDER_MODE=real")
+		}
+		return fbmessenger.New(fbmessenger.Config{PageAccessToken: cfg.FBPageAccessToken})
 	default:
 		return nil, fmt.Errorf("no real provider for channel %q", cfg.WorkerChannel)
 	}

@@ -115,6 +115,32 @@ func (s *stubTemplateRepo) Get(_ context.Context, id uuid.UUID) (domain.Template
 	return t, nil
 }
 
+func (s *stubTemplateRepo) Update(_ context.Context, t domain.Template) error {
+	if _, ok := s.tpls[t.ID]; !ok {
+		return domain.ErrNotFound
+	}
+	s.tpls[t.ID] = t
+	return nil
+}
+
+func (s *stubTemplateRepo) Delete(_ context.Context, id uuid.UUID) error {
+	if _, ok := s.tpls[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(s.tpls, id)
+	return nil
+}
+
+func (s *stubTemplateRepo) List(_ context.Context, ownerUserID int64, _ *domain.Channel) ([]domain.Template, error) {
+	var out []domain.Template
+	for _, t := range s.tpls {
+		if t.OwnerUserID == ownerUserID {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
 func seedTemplate(id uuid.UUID) domain.Template {
 	t, _ := domain.NewTemplate(id, "welcome", domain.ChannelEmail, "en",
 		"Hello {{.Name}}", "Welcome {{.Name}}", nil, 1, 1, time.Now())

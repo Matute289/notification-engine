@@ -33,6 +33,9 @@ type NotificationRepository interface {
 type TemplateRepository interface {
 	Create(ctx context.Context, t domain.Template) error
 	Get(ctx context.Context, id uuid.UUID) (domain.Template, error)
+	Update(ctx context.Context, t domain.Template) error
+	Delete(ctx context.Context, id uuid.UUID) error
+	List(ctx context.Context, ownerUserID int64, channel *domain.Channel) ([]domain.Template, error)
 }
 
 // UserRepository persists users, devices, and per-channel settings.
@@ -40,6 +43,7 @@ type UserRepository interface {
 	GetUser(ctx context.Context, id int64) (domain.User, error)
 	DevicesForUser(ctx context.Context, userID int64, channel domain.Channel) ([]domain.Device, error)
 	UpsertDevice(ctx context.Context, d domain.Device) error
+	DeleteDevice(ctx context.Context, userID int64, channel domain.Channel, token domain.DeviceToken) error
 	GetSetting(ctx context.Context, userID int64, channel domain.Channel) (domain.Setting, error)
 	UpsertSetting(ctx context.Context, s domain.Setting) error
 }

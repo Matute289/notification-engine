@@ -59,3 +59,21 @@ func NewTemplate(id uuid.UUID, name string, ch Channel, locale, subject, body st
 		UpdatedAt:   now,
 	}, nil
 }
+
+// UpdateFields returns a new Template with the mutable fields replaced.
+// Channel, Locale, Version, and OwnerUserID are immutable.
+func (t Template) UpdateFields(name, subject, body string, mediaURLs []string, now time.Time) (Template, error) {
+	if name == "" {
+		return Template{}, fmt.Errorf("%w: template name required", ErrInvalidInput)
+	}
+	if body == "" {
+		return Template{}, fmt.Errorf("%w: template body required", ErrInvalidInput)
+	}
+	updated := t
+	updated.Name = name
+	updated.Subject = subject
+	updated.Body = body
+	updated.MediaURLs = mediaURLs
+	updated.UpdatedAt = now
+	return updated, nil
+}

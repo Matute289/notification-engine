@@ -63,6 +63,11 @@ type Config struct {
 	SendGridAPIKey   string `env:"SENDGRID_API_KEY"`
 	SendGridFromEmail string `env:"SENDGRID_FROM_EMAIL"`
 	SendGridFromName  string `env:"SENDGRID_FROM_NAME"`
+	TelegramBotToken       string `env:"TELEGRAM_BOT_TOKEN"`
+	WhatsAppPhoneNumberID  string `env:"WHATSAPP_PHONE_NUMBER_ID"`
+	WhatsAppAccessToken    string `env:"WHATSAPP_ACCESS_TOKEN"`
+	LineChannelAccessToken string `env:"LINE_CHANNEL_ACCESS_TOKEN"`
+	FBPageAccessToken      string `env:"FB_PAGE_ACCESS_TOKEN"`
 
 	RateLimit RateLimit
 	// AppClients is required when CLERK_ISSUER is not set; optional otherwise.
@@ -75,18 +80,23 @@ type Config struct {
 // RateLimit holds the per-channel hourly cap. Conversion to a typed map keeps
 // downstream code free of channel-string juggling.
 type RateLimit struct {
-	PushPerHour  int `env:"RATELIMIT_PUSH_PER_HOUR" envDefault:"20"`
-	SMSPerHour   int `env:"RATELIMIT_SMS_PER_HOUR" envDefault:"5"`
-	EmailPerHour int `env:"RATELIMIT_EMAIL_PER_HOUR" envDefault:"10"`
+	PushPerHour   int `env:"RATELIMIT_PUSH_PER_HOUR" envDefault:"20"`
+	SMSPerHour    int `env:"RATELIMIT_SMS_PER_HOUR" envDefault:"5"`
+	EmailPerHour  int `env:"RATELIMIT_EMAIL_PER_HOUR" envDefault:"10"`
+	SocialPerHour int `env:"RATELIMIT_SOCIAL_PER_HOUR" envDefault:"10"`
 }
 
 // AsMap returns the per-channel limits keyed by the typed Channel.
 func (r RateLimit) AsMap() map[domain.Channel]int {
 	return map[domain.Channel]int{
-		domain.ChannelPushIOS:     r.PushPerHour,
-		domain.ChannelPushAndroid: r.PushPerHour,
-		domain.ChannelSMS:         r.SMSPerHour,
-		domain.ChannelEmail:       r.EmailPerHour,
+		domain.ChannelPushIOS:           r.PushPerHour,
+		domain.ChannelPushAndroid:       r.PushPerHour,
+		domain.ChannelSMS:               r.SMSPerHour,
+		domain.ChannelEmail:             r.EmailPerHour,
+		domain.ChannelTelegram:          r.SocialPerHour,
+		domain.ChannelWhatsApp:          r.SocialPerHour,
+		domain.ChannelLine:              r.SocialPerHour,
+		domain.ChannelFacebookMessenger: r.SocialPerHour,
 	}
 }
 

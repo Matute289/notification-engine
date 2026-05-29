@@ -49,3 +49,63 @@ func (r *TemplateRepository) Get(ctx context.Context, id uuid.UUID) (domain.Temp
 	t.Channel = domain.Channel(channel)
 	return t, nil
 }
+
+func (r *TemplateRepository) Update(ctx context.Context, t domain.Template) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE notification_templates SET name=$1, subject=$2, body=$3, updated_at=NOW() WHERE id=$4`,
+		t.Name, t.Subject, t.Body, t.ID)
+	if err != nil {
+		return fmt.Errorf("update template: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *TemplateRepository) Delete(ctx context.Context, id uuid.UUID) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM notification_templates WHERE id=$1`, id)
+	if err != nil {
+		return fmt.Errorf("delete template: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *TemplateRepository) List(ctx context.Context, ownerUserID int64, channel *domain.Channel) ([]domain.Template, error) {
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if channel != nil {
+		rows, err = r.pool.Query(ctx,
+			`SELECT id, name, channel, locale, subject, body, version, owner_user_id, created_at, updated_at
+			   FROM notification_templates WHERE owner_user_id=$1 AND channel=$2 ORDER BY name`,
+			ownerUserID, string(*channel))
+	} else {
+		rows, err = r.pool.Query(ctx,
+			`SELECT id, name, channel, locale, subject, body, version, owner_user_id, created_at, updated_at
+			   FROM notification_templates WHERE owner_user_id=$1 ORDER BY channel, name`,
+			ownerUserID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list templates: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Template
+	for rows.Next() {
+		var (
+			t  domain.Template
+			ch string
+		)
+		if err := rows.Scan(&t.ID, &t.Name, &ch, &t.Locale, &t.Subject, &t.Body,
+			&t.Version, &t.OwnerUserID, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("list templates scan: %w", err)
+		}
+		t.Channel = domain.Channel(ch)
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}

@@ -106,3 +106,67 @@ func (r *TemplateRepository) Get(ctx context.Context, id uuid.UUID) (domain.Temp
 		UpdatedAt:   doc.UpdatedAt,
 	}, nil
 }
+
+func (r *TemplateRepository) Update(ctx context.Context, t domain.Template) error {
+	filter := bson.M{"_id": t.ID.String()}
+	update := bson.M{"$set": bson.M{
+		"name":       t.Name,
+		"subject":    t.Subject,
+		"body":       t.Body,
+		"media_urls": t.MediaURLs,
+		"updated_at": t.UpdatedAt,
+	}}
+	res, err := r.col.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("mongodb: update template: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *TemplateRepository) Delete(ctx context.Context, id uuid.UUID) error {
+	res, err := r.col.DeleteOne(ctx, bson.M{"_id": id.String()})
+	if err != nil {
+		return fmt.Errorf("mongodb: delete template: %w", err)
+	}
+	if res.DeletedCount == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *TemplateRepository) List(ctx context.Context, ownerUserID int64, channel *domain.Channel) ([]domain.Template, error) {
+	filter := bson.M{"owner_user_id": ownerUserID}
+	if channel != nil {
+		filter["channel"] = string(*channel)
+	}
+	opts := options.Find().SetSort(bson.D{{Key: "channel", Value: 1}, {Key: "name", Value: 1}})
+	cursor, err := r.col.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("mongodb: list templates: %w", err)
+	}
+	defer cursor.Close(ctx)
+	var out []domain.Template
+	for cursor.Next(ctx) {
+		var doc templateDoc
+		if err := cursor.Decode(&doc); err != nil {
+			return nil, fmt.Errorf("mongodb: list templates decode: %w", err)
+		}
+		out = append(out, domain.Template{
+			ID:          uuid.MustParse(doc.ID),
+			Name:        doc.Name,
+			Channel:     domain.Channel(doc.Channel),
+			Locale:      doc.Locale,
+			Subject:     doc.Subject,
+			Body:        doc.Body,
+			MediaURLs:   doc.MediaURLs,
+			Version:     doc.Version,
+			OwnerUserID: doc.OwnerUserID,
+			CreatedAt:   doc.CreatedAt,
+			UpdatedAt:   doc.UpdatedAt,
+		})
+	}
+	return out, cursor.Err()
+}

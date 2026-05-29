@@ -91,3 +91,35 @@ func (c *TemplateCache) set(ctx context.Context, t domain.Template) {
 		c.cb.RecordSuccess()
 	}
 }
+
+func (c *TemplateCache) Update(ctx context.Context, t domain.Template) error {
+	if err := c.repo.Update(ctx, t); err != nil {
+		return err
+	}
+	if c.cb == nil || c.cb.Allow() {
+		c.set(ctx, t)
+	}
+	return nil
+}
+
+func (c *TemplateCache) Delete(ctx context.Context, id uuid.UUID) error {
+	if err := c.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	if c.cb == nil || c.cb.Allow() {
+		key := templateCachePrefix + id.String()
+		if delErr := c.rdb.Del(ctx, key).Err(); delErr != nil {
+			if c.cb != nil && isRedisError(delErr) {
+				c.cb.RecordFailure()
+			}
+		} else if c.cb != nil {
+			c.cb.RecordSuccess()
+		}
+	}
+	return nil
+}
+
+// List bypasses the cache: list queries are not cached to avoid stale reads after updates.
+func (c *TemplateCache) List(ctx context.Context, ownerUserID int64, channel *domain.Channel) ([]domain.Template, error) {
+	return c.repo.List(ctx, ownerUserID, channel)
+}
