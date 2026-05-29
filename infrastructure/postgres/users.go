@@ -105,3 +105,16 @@ func (r *UserRepository) UpsertSetting(ctx context.Context, s domain.Setting) er
 	}
 	return nil
 }
+
+func (r *UserRepository) DeleteDevice(ctx context.Context, userID int64, channel domain.Channel, token domain.DeviceToken) error {
+	tag, err := r.pool.Exec(ctx,
+		`DELETE FROM devices WHERE user_id=$1 AND channel=$2 AND device_token=$3`,
+		userID, string(channel), string(token))
+	if err != nil {
+		return fmt.Errorf("delete device: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}

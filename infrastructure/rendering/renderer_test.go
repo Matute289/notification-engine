@@ -21,6 +21,11 @@ func (c *countingRepo) Get(_ context.Context, _ uuid.UUID) (domain.Template, err
 	atomic.AddInt32(&c.calls, 1)
 	return c.tpl, nil
 }
+func (c *countingRepo) Update(_ context.Context, _ domain.Template) error { return nil }
+func (c *countingRepo) Delete(_ context.Context, _ uuid.UUID) error       { return nil }
+func (c *countingRepo) List(_ context.Context, _ int64, _ *domain.Channel) ([]domain.Template, error) {
+	return nil, nil
+}
 
 func newRepo(body string) *countingRepo {
 	return &countingRepo{
