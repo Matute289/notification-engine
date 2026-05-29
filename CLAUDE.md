@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Go notification engine implementing the design from chapter 10 of *System Design Interview Vol. 1* (`Notification_System.pdf` in this repo). API service + per-channel workers, all runnable via docker-compose. Channels: iOS push, Android push, SMS, email. Locally everything runs with **mock providers** so the stack works without third-party credentials.
+A Go notification engine implementing the design from chapter 10 of *System Design Interview Vol. 1* (`Notification_System.pdf` in this repo). API service + per-channel workers, all runnable via docker-compose. Channels: iOS push, Android push, SMS, email, Telegram, WhatsApp, Line, Facebook Messenger. Locally everything runs with **mock providers** so the stack works without third-party credentials.
 
 **Infrastructure-agnostic:** Works with any Postgres, Redis, RabbitMQ, or MongoDB provider. Supports any JWT issuer or HMAC-only auth. Deploys to AWS, GCP, Azure, Kubernetes, VPS, or on-premises — just wire env vars. Platform-specific blueprints live in dedicated branches (e.g., the `render` branch).
 
@@ -25,8 +25,12 @@ NotificationEngine/
           get_notification.go
           create_template.go
           get_template.go
+          update_template.go
+          delete_template.go
+          list_templates.go
           update_setting.go
           register_device.go
+          delete_device.go
           fakes_test.go         (shared port fakes + withURLParam helper)
           *_test.go             (one test file per handler + error_test.go)
         dto/              (package dto — one file per exported DTO type)
@@ -50,10 +54,11 @@ NotificationEngine/
     provider/
       mock/               ← mock NotificationProvider (used locally)
       apns/, fcm/, twilio/, sendgrid/  ← real provider skeletons
+      telegram/, whatsapp/, line/, fbmessenger/  ← social channel provider skeletons
   internal/
     domain/               ← entities, value objects, sentinel errors, state machine
     port/                 ← outbound port interfaces (what services need from infrastructure)
-    service/              ← one struct + Execute() per use case (SubmitNotification, ProcessNotification, …)
+    service/              ← one struct + Execute() per use case (SubmitNotification, ProcessNotification, UpdateTemplate, DeleteTemplate, ListTemplates, DeleteDevice, …)
     platform/
       auth/               ← HMAC verifier + Clerk JWT verifier (ClerkVerifier)
       config/             ← env-based config loader

@@ -1,6 +1,6 @@
 # Notification Engine
 
-A Go service that delivers notifications to end users over four channels — **iOS push** (APNs), **Android push** (FCM), **SMS**, and **email** — via an asynchronous, queue-backed pipeline. Implements the design from chapter 10 of *System Design Interview Vol. 1* (`Notification_System.pdf` in this repo).
+A Go service that delivers notifications to end users over eight channels — **iOS push** (APNs), **Android push** (FCM), **SMS**, **email**, **Telegram**, **WhatsApp**, **Line**, and **Facebook Messenger** — via an asynchronous, queue-backed pipeline. Implements the design from chapter 10 of *System Design Interview Vol. 1* (`Notification_System.pdf` in this repo).
 
 **Infrastructure-agnostic:** Works with any Postgres, Redis, RabbitMQ, and MongoDB providers. Supports any JWT issuer or HMAC-only auth. Deploy to AWS, GCP, Azure, Kubernetes, VPS, or on-premises.
 
@@ -93,7 +93,7 @@ make up
 This builds all Docker images, brings up a complete local environment, runs goose migrations, and starts:
 
 - **api** (`:8080`) — HTTP service with JWT/HMAC auth
-- **4 workers** (`worker-push-ios`, `worker-push-android`, `worker-sms`, `worker-email`) — per-channel message consumers with admin listeners on `:9090`
+- **8 workers** (`worker-push-ios`, `worker-push-android`, `worker-sms`, `worker-email`, and optionally `worker-telegram`, `worker-whatsapp`, `worker-line`, `worker-facebook-messenger`) — per-channel message consumers with admin listeners on `:9090`
 - **janitor** — rescues notifications stuck in `in_flight` after worker crashes
 - **outbox-relay** — drains `notification_outbox` to the message queue
 - **prometheus** (`:9091`) — scrapes metrics from API and workers
@@ -135,9 +135,10 @@ Everything is environment-driven. Defaults live in `.env.example`; the compose s
 | `RATELIMIT_PUSH_PER_HOUR` | Per-user/channel hourly cap (push)                    | `20`                |
 | `RATELIMIT_SMS_PER_HOUR`  | Per-user/channel hourly cap (SMS)                     | `5`                 |
 | `RATELIMIT_EMAIL_PER_HOUR`| Per-user/channel hourly cap (email)                   | `10`                |
+| `RATELIMIT_SOCIAL_PER_HOUR`| Per-user/channel hourly cap (Telegram/WhatsApp/Line/Messenger) | `10`       |
 | `APP_KEY_RATE_LIMIT`      | Global QPS cap per app key (0 = disabled)            | `0`                 |
 | **Worker & Retry**        |                                                        |                     |
-| `WORKER_CHANNEL`          | `push_ios` `push_android` `sms` `email`               | `push_ios`          |
+| `WORKER_CHANNEL`          | `push_ios` `push_android` `sms` `email` `telegram` `whatsapp` `line` `facebook_messenger` | `push_ios` |
 | `WORKER_CONCURRENCY`      | Prefetch + goroutine pool size per worker            | `8`                 |
 | `MAX_RETRIES`             | Retry hops before dead-lettering                      | `5`                 |
 | **Janitor & Outbox**      |                                                        |                     |
@@ -349,7 +350,8 @@ infrastructure/                # adapters — pluggable implementations of ports
   rendering/                   # TemplateRenderer (in-process caching)
   provider/
     mock/                      # mock provider (used in development)
-    apns/fcm/twilio/sendgrid/  # real provider adapters (pluggable)
+    apns/fcm/twilio/sendgrid/  # real provider adapters (push/SMS/email)
+    telegram/whatsapp/line/fbmessenger/  # social channel provider skeletons
 
 middleware/                    # HTTP middleware (auth-agnostic, infra-agnostic)
 observability/
@@ -390,12 +392,16 @@ README.md (this file)
 
 Switching to real third-party delivery is a config flip plus credentials. Set `PROVIDER_MODE=real` and supply the env vars below; `cmd/worker/main.go::buildProvider` selects the right adapter for `WORKER_CHANNEL`.
 
-| Channel        | Adapter                                  | Required env                                                                  |
-| -------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
-| `push_ios`     | `infrastructure/provider/apns`           | `APNS_BUNDLE_ID`, `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_AUTH_KEY`              |
-| `push_android` | `infrastructure/provider/fcm`            | `FCM_PROJECT_ID`, `FCM_CREDENTIALS_JSON` (path to service-account JSON)       |
-| `sms`          | `infrastructure/provider/twilio`         | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`               |
-| `email`        | `infrastructure/provider/sendgrid`       | `SENDGRID_API_KEY`, `SENDGRID_FROM_EMAIL`, `SENDGRID_FROM_NAME` (optional)    |
+| Channel                | Adapter                                      | Required env                                                                    |
+| ---------------------- | -------------------------------------------- | ------------------------------------------------------------------------------- |
+| `push_ios`             | `infrastructure/provider/apns`               | `APNS_BUNDLE_ID`, `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_AUTH_KEY`               |
+| `push_android`         | `infrastructure/provider/fcm`                | `FCM_PROJECT_ID`, `FCM_CREDENTIALS_JSON` (path to service-account JSON)         |
+| `sms`                  | `infrastructure/provider/twilio`             | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`                 |
+| `email`                | `infrastructure/provider/sendgrid`           | `SENDGRID_API_KEY`, `SENDGRID_FROM_EMAIL`, `SENDGRID_FROM_NAME` (optional)      |
+| `telegram`             | `infrastructure/provider/telegram`           | `TELEGRAM_BOT_TOKEN`                                                            |
+| `whatsapp`             | `infrastructure/provider/whatsapp`           | `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_ACCESS_TOKEN`                             |
+| `line`                 | `infrastructure/provider/line`               | `LINE_CHANNEL_ACCESS_TOKEN`                                                     |
+| `facebook_messenger`   | `infrastructure/provider/fbmessenger`        | `FB_PAGE_ACCESS_TOKEN`                                                          |
 
 The HTTP shape of each adapter is locked in by httptest-backed unit tests (transient vs terminal error mapping included). Each adapter is unit-tested with httptest and implements the `port.NotificationProvider` interface.
 

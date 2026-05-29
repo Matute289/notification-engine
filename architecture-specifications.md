@@ -9,9 +9,10 @@
 ## 1. Overview
 
 The Notification Engine is a Go service that accepts notification requests over
-HTTP and delivers them to end users via four channels: **iOS push** (APNs),
-**Android push** (FCM), **SMS** (Twilio-class), and **email**
-(SendGrid-class). It is built around an asynchronous, queue-backed pipeline:
+HTTP and delivers them to end users via eight channels: **iOS push** (APNs),
+**Android push** (FCM), **SMS** (Twilio-class), **email** (SendGrid-class),
+**Telegram**, **WhatsApp**, **Line**, and **Facebook Messenger**.
+It is built around an asynchronous, queue-backed pipeline:
 
 ```
 internal services ──► HTTP API ──► message queue ──► per-channel worker ──► provider ──► user device
@@ -147,8 +148,8 @@ illegal state.
 | --------------- | ------------- | -------------------------------------------------------------------------------------- |
 | `Notification`  | aggregate     | Central entity. Holds recipient, channel, content, status, attempt count, timestamps.  |
 | `Status`        | value object  | `received → enqueued → in_flight → sent` (+ failed/retrying/dead_letter branches).     |
-| `Channel`       | value object  | One of `push_ios`, `push_android`, `sms`, `email`.                                     |
-| `Recipient`     | value object  | UserID and/or raw destination (Email / Phone / DeviceToken).                           |
+| `Channel`       | value object  | One of `push_ios`, `push_android`, `sms`, `email`, `telegram`, `whatsapp`, `line`, `facebook_messenger`. |
+| `Recipient`     | value object  | UserID and/or raw destination (Email / Phone / DeviceToken / MessagingID). `MessagingID` is used by Telegram, Line, and Facebook Messenger. WhatsApp reuses `Phone`. |
 | `Email`/`Phone`/`DeviceToken`/`EventID` | value objects | Self-validating wrappers over `string`.                              |
 | `Template`      | aggregate     | Versioned subject + body + optional `MediaURLs` (image/attachment URLs), stored in MongoDB. |
 | `User`          | entity        | Contact info captured at signup.                                                       |
@@ -208,8 +209,8 @@ adapter maps them to status codes via `errors.Is`.
 | `NotificationRepository`   | Persist + retrieve notifications and analytics events. Also `ListStuckInFlight` for the janitor.     |
 | `TxNotificationRepository` | Extends `NotificationRepository` with `SubmitWithOutbox(n, payload)` — atomic notification + outbox. |
 | `OutboxRepository`         | `Claim(limit) → ([]OutboxItem, OutboxTx)` for the relay. Uses `FOR UPDATE SKIP LOCKED`.              |
-| `TemplateRepository`       | Persist + retrieve templates.                                                                        |
-| `UserRepository`           | Read users, devices; upsert devices and settings.                                                    |
+| `TemplateRepository`       | Persist + retrieve templates. Methods: `Create`, `Get`, `Update`, `Delete`, `List`.                  |
+| `UserRepository`           | Read users, devices; upsert/delete devices; upsert settings. Methods include `DeleteDevice`.         |
 | `EventPublisher`           | `Publish` (typed), `PublishRaw` (bytes, used by relay), `Encode` (typed→bytes), `Retry`.             |
 | `RateLimiter`              | Token-bucket per key.                                                                                |
 | `Deduper`                  | Best-effort idempotency on `event_id`.                                                               |
@@ -231,6 +232,10 @@ adapter maps them to status codes via `errors.Is`.
 | `UpdateSetting`            | `httpapi`             | Upsert opt-in for a (user, channel).                                                                                                                                                                     |
 | `CreateTemplate`           | `httpapi`             | Validate via `domain.NewTemplate` and persist.                                                                                                                                                           |
 | `GetTemplate`              | `httpapi`             | Read one template by id.                                                                                                                                                                                 |
+| `UpdateTemplate`           | `httpapi`             | Get → ownership check → `Template.UpdateFields` (name/subject/body/mediaURLs, in-place mutation) → persist. Returns `ErrForbidden` if wrong owner.                                                     |
+| `DeleteTemplate`           | `httpapi`             | Get → ownership check → hard-delete. Returns `ErrForbidden` if wrong owner, `ErrNotFound` if missing.                                                                                                   |
+| `ListTemplates`            | `httpapi`             | List all templates for an owner, optionally filtered by channel. Returns a slice; handler groups by channel in the response.                                                                             |
+| `DeleteDevice`             | `httpapi`             | Validates push channel and non-empty token → `UserRepository.DeleteDevice`. Returns `ErrNotFound` if device not registered.                                                                              |
 
 `SubmitNotification` is the largest use case; everything else is a thin
 orchestration around one or two ports. The persist-then-publish-then-mark
@@ -245,7 +250,7 @@ message can be re-driven by a janitor; the inverse never happens).
 
 | Module                           | Drives                  | Notes                                                                                                                                                                         |
 | -------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cmd/api/http/handlers/`         | `Submit`/`Get`/`Create` | One file per endpoint (`submit_notification.go`, `get_notification.go`, `create_template.go`, `get_template.go`, `update_setting.go`, `register_device.go`). `handler.go` holds the `Handler` struct (fields use `Svc` suffix) and `writeJSON`. `error.go` holds `mapDomainError` + `writeError`. Each file has a matching `*_test.go`; shared fakes live in `fakes_test.go`. |
+| `cmd/api/http/handlers/`         | `Submit`/`Get`/`Create`/`Update`/`Delete`/`List` | One file per endpoint (`submit_notification.go`, `get_notification.go`, `create_template.go`, `get_template.go`, `update_template.go`, `delete_template.go`, `list_templates.go`, `update_setting.go`, `register_device.go`, `delete_device.go`). `handler.go` holds the `Handler` struct (fields use `Svc` suffix) and `writeJSON`. `error.go` holds `mapDomainError` + `writeError`. Each file has a matching `*_test.go`; shared fakes live in `fakes_test.go`. |
 | `cmd/api/http/dto/`              | n/a                     | One file per exported DTO type. `ToView` helper converts domain `Notification` to `NotificationView`.                                                                         |
 | `cmd/api/http/router.go`         | n/a                     | chi router wiring: `NewRouter(h, verifier, limiter, log, cfg)`. Health and metrics outside auth-protected sub-router.                                                         |
 | `middleware/`                    | n/a                     | RequestID (UUID per request), Recoverer (panic → 500 + stack log), AccessLog (slog + Prometheus histogram), Authenticate (Clerk JWT + HMAC verification), AppKeyRateLimit.           |
@@ -259,8 +264,9 @@ message can be re-driven by a janitor; the inverse never happens).
 | `infrastructure/mongodb/`           | `TemplateRepository`                          | Example: MongoDB collection. Could swap for Firestore, DynamoDB, or Postgres JSONB. UUID as `_id`; unique index on `(name, channel, locale, version)`.                  |
 | `infrastructure/redis/`             | `RateLimiter`, `Deduper`, `TemplateCache`     | Example: Redis. Could swap for Memcached, DynamoDB, or in-memory store. Token-bucket via Lua; `TemplateCache` is a read-through write-through decorator. All three share a single `CircuitBreaker` — see §9.6. |
 | `infrastructure/rabbitmq/`          | `EventPublisher`                              | Example: RabbitMQ topology. Could swap for Kafka, SQS, GCP Pub/Sub, NATS. Declares one work + retry + dead queue per channel; dead-letter-with-TTL for retries. |
-| `infrastructure/provider/mock/`     | `NotificationProvider`                        | Logs every send; an injected `failureRate` exercises the retry branch in demos.                                                                                                                    |
-| `infrastructure/provider/{apns,fcm,twilio,sendgrid}/` | `NotificationProvider`        | Real provider adapters with full request/response shape and transient/terminal error mapping. (Easily extended for more providers.)                                                                                                     |
+| `infrastructure/provider/mock/`     | `NotificationProvider`                        | Logs every send; an injected `failureRate` exercises the retry branch in demos. Channel-agnostic — handles all 8 channels.                                                                         |
+| `infrastructure/provider/{apns,fcm,twilio,sendgrid}/` | `NotificationProvider`        | Real provider adapters for push (APNs/FCM), SMS (Twilio), email (SendGrid) with full request/response shape and transient/terminal error mapping.                                                  |
+| `infrastructure/provider/{telegram,whatsapp,line,fbmessenger}/` | `NotificationProvider` | Social channel provider skeletons: Telegram Bot API, Meta Cloud API (WhatsApp), LINE Messaging API, Meta Graph API (Facebook Messenger). Each follows the same pattern as the existing providers; credential wiring via env vars. |
 | `infrastructure/rendering/`         | `TemplateRenderer`                            | Compiles `text/template` (or `html/template` for email auto-escape); per-id in-process cache with TTL.                                                                                            |
 | `observability/metrics/`            | `MetricsRecorder`                             | Example: Prometheus. Could swap for OpenTelemetry, DataDog, NewRelic. Counter/histogram set exposed at `/metrics`. Tests use a no-op fake.                                                                                                  |
 | `observability/logger/`             | n/a                                           | slog JSON logger (cross-cutting, not behind a port). Example: stdout. Could redirect to any log sink.                                                                                                                                               |
@@ -346,8 +352,12 @@ All `/v1/*` routes require **at least one** authentication mechanism (JWT or HMA
 | GET    | `/v1/notifications/{id}`      | `GetNotification`         | 200 + view                |
 | POST   | `/v1/templates`               | `CreateTemplate`          | 201 + template            |
 | GET    | `/v1/templates/{id}`          | `GetTemplate`             | 200 + template            |
+| PUT    | `/v1/templates/{id}`          | `UpdateTemplate`          | 200 + updated template    |
+| DELETE | `/v1/templates/{id}`          | `DeleteTemplate`          | 204                       |
+| GET    | `/v1/templates`               | `ListTemplates`           | 200 + `map[channel][]TemplateView`; optional `?channel=` filter |
 | PUT    | `/v1/users/{id}/settings`     | `UpdateSetting`           | 204                       |
 | POST   | `/v1/users/{id}/devices`      | `RegisterDevice`          | 204                       |
+| DELETE | `/v1/users/{id}/devices`      | `DeleteDevice`            | 204; body `{channel, device_token}` |
 | GET    | `/healthz`, `/readyz`         | n/a                       | 200 `{status:"ok"}`       |
 | GET    | `/metrics`                    | Prometheus scraper        | 200 text/plain            |
 
@@ -451,7 +461,7 @@ Caller-supplied `event_id` (1..256 chars). Two layers:
 
 Per-(user, channel) fixed window. Keys look like `notif:rl:<user_id>:<channel>`.
 Limits via env: `RATELIMIT_PUSH_PER_HOUR=20`, `..._SMS_PER_HOUR=5`,
-`..._EMAIL_PER_HOUR=10`. Window = `RATELIMIT_WINDOW` (default 1h). When the
+`..._EMAIL_PER_HOUR=10`, `..._SOCIAL_PER_HOUR=10` (applies to all four social channels). Window = `RATELIMIT_WINDOW` (default 1h). When the
 user is *not* identified by `user_id` (raw email/phone/token), no per-user
 limit applies — global QPS would be enforced upstream of the API in
 production.
@@ -570,8 +580,16 @@ RATELIMIT_WINDOW=1h
 RATELIMIT_PUSH_PER_HOUR=20
 RATELIMIT_SMS_PER_HOUR=5
 RATELIMIT_EMAIL_PER_HOUR=10
-WORKER_CHANNEL=push_ios|push_android|sms|email   (worker only)
+RATELIMIT_SOCIAL_PER_HOUR=10
+WORKER_CHANNEL=push_ios|push_android|sms|email|telegram|whatsapp|line|facebook_messenger   (worker only)
 WORKER_CONCURRENCY=8
+
+# Social channel credentials (PROVIDER_MODE=real only)
+TELEGRAM_BOT_TOKEN=
+WHATSAPP_PHONE_NUMBER_ID=
+WHATSAPP_ACCESS_TOKEN=
+LINE_CHANNEL_ACCESS_TOKEN=
+FB_PAGE_ACCESS_TOKEN=
 JANITOR_INTERVAL=30s
 JANITOR_STUCK_THRESHOLD=5m
 RELAY_INTERVAL=500ms
@@ -655,6 +673,7 @@ pointer to the implementation. Anything genuinely outstanding is in §13.1.
 
 ### 13.1 Outstanding follow-ups
 
+- **Social channel credentials** (Telegram, WhatsApp, Line, Facebook Messenger) are checked at startup but the HTTP auth/payload logic is fully implemented; set the relevant env vars (`TELEGRAM_BOT_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` + `WHATSAPP_ACCESS_TOKEN`, `LINE_CHANNEL_ACCESS_TOKEN`, `FB_PAGE_ACCESS_TOKEN`) and `PROVIDER_MODE=real` to use them. The `notification_settings` channel constraint was extended in migration `0006_social_channels.sql`.
 - **APNs JWT signer** is stubbed in `cmd/worker/main.go::buildAPNSAuth`. A real implementation needs an ES256 signer (e.g. `golang-jwt/jwt`) over the `.p8` key with a 50-minute rotation. The HTTP path itself is exercised by tests via a `fakeAuth`.
 - **FCM OAuth2 token source** is stubbed in `cmd/worker/main.go::buildFCMTokenSource`. Real wiring uses `golang.org/x/oauth2/google` to mint tokens for the `https://www.googleapis.com/auth/firebase.messaging` scope.
 - The relay does not currently retry transient publish failures inside one pass; it marks them failed and the next pass picks them up. Adequate for v1 — bounded by `RELAY_INTERVAL`. Could be tightened with attempt-limited retry inside the use case.
@@ -698,4 +717,4 @@ Run unit tests with `go test -race -count=1 ./...`. Integration tests assume
 
 ---
 
-*Last reviewed: 2026-05-23 — Redis circuit breaker added: shared CircuitBreaker across RateLimiter, Deduper, and TemplateCache with fail-open fallbacks; see §9.6.*
+*Last reviewed: 2026-05-29 — Template CRUD (update/delete/list), device delete, and 4 social channel providers (Telegram, WhatsApp, Line, Facebook Messenger) added; see §4.2 and §8.*
