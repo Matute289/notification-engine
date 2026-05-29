@@ -5,4 +5,5 @@ type Recipient struct {
 	Email       string `json:"email,omitempty"`
 	PhoneNumber string `json:"phone_number,omitempty"`
 	DeviceToken string `json:"device_token,omitempty"`
+	MessagingID string `json:"messaging_id,omitempty"`
 }
