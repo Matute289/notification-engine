@@ -1,9 +1,11 @@
 name: Sync render branch from main
 
-# Runs whenever main is updated. Merges main into render so that the render
-# branch always carries the latest code plus its own Render-specific files
-# (render.yaml, DEPLOY_RENDER.md). The merge is always conflict-free because
-# those files do not exist on main (they were added after the branch-base commit).
+# Runs whenever main is updated. Rebases render onto main so that the
+# render-specific commits (render.yaml, DEPLOY_RENDER.md) are always on top
+# of the latest main, keeping a clean linear history with no merge commits.
+#
+# Uses --force-with-lease (safe force push): aborts if someone else pushed
+# to render since the last fetch, preventing accidental overwrites.
 #
 # GITHUB_TOKEN cannot push to branches with "Require a pull request before
 # merging" protection. If that rule is enabled on `render`, create a fine-grained
@@ -19,7 +21,7 @@ permissions:
 
 jobs:
   sync:
-    name: Merge main → render
+    name: Rebase render onto main
     runs-on: ubuntu-latest
 
     steps:
@@ -33,8 +35,8 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Merge main into render
+      - name: Rebase render onto main
         run: |
           git checkout render
-          git merge origin/main --no-edit
-          git push origin render
+          git rebase origin/main
+          git push origin render --force-with-lease
