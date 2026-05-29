@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,7 +49,12 @@ func signedRequest(t *testing.T, method, path string, body []byte) *http.Request
 func signedRequestOnBehalf(t *testing.T, method, path, onBehalfOf string, body []byte) *http.Request {
 	t.Helper()
 	ts := fmt.Sprintf("%d", time.Now().Unix())
-	sig := auth.Sign(appSecret(), ts, method, path, onBehalfOf, body)
+	// HMAC canonical string uses only the path component, not query params.
+	signedPath := path
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		signedPath = path[:idx]
+	}
+	sig := auth.Sign(appSecret(), ts, method, signedPath, onBehalfOf, body)
 	req, err := http.NewRequest(method, host()+path, bytes.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -82,10 +88,12 @@ func TestSubmitNotificationEndToEnd(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&sub))
 	require.NotEqual(t, uuid.Nil, sub.NotificationID)
 
-	// Worker should pick this up within a few seconds.
+	// Worker should pick this up within 30s (allows for RabbitMQ connection
+	// establishment on first publish after stack startup).
 	require.Eventually(t, func() bool {
 		path := "/v1/notifications/" + sub.NotificationID.String()
-		req := signedRequest(t, "GET", path, nil)
+		// Must include onBehalfOf so RequireUserOwnership passes (notification owner = user 1).
+		req := signedRequestOnBehalf(t, "GET", path, "1", nil)
 		r, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return false
@@ -94,7 +102,7 @@ func TestSubmitNotificationEndToEnd(t *testing.T) {
 		var out struct{ Status string `json:"status"` }
 		_ = json.NewDecoder(r.Body).Decode(&out)
 		return out.Status == "sent"
-	}, 10*time.Second, 200*time.Millisecond)
+	}, 30*time.Second, 200*time.Millisecond)
 }
 
 func TestDuplicateEventCollapses(t *testing.T) {
@@ -201,8 +209,9 @@ func TestUpdateTemplate_HappyPath_200(t *testing.T) {
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
 
-	// Update it.
-	updateBody := []byte(`{"name":"updated-name","body":"Updated body."}`)
+	// Update it with a unique name to avoid conflicts across test runs.
+	updatedName := "it-upd-new-" + uuid.NewString()
+	updateBody := []byte(fmt.Sprintf(`{"name":"%s","body":"Updated body."}`, updatedName))
 	resp2, err := http.DefaultClient.Do(signedRequestOnBehalf(t, "PUT", "/v1/templates/"+created.ID, "42", updateBody))
 	require.NoError(t, err)
 	defer resp2.Body.Close()
@@ -213,7 +222,7 @@ func TestUpdateTemplate_HappyPath_200(t *testing.T) {
 		Body string `json:"body"`
 	}
 	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&updated))
-	require.Equal(t, "updated-name", updated.Name)
+	require.Equal(t, updatedName, updated.Name)
 	require.Equal(t, "Updated body.", updated.Body)
 }
 
