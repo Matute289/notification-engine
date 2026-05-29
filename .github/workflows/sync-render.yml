@@ -1,0 +1,40 @@
+name: Sync render branch from main
+
+# Runs whenever main is updated. Merges main into render so that the render
+# branch always carries the latest code plus its own Render-specific files
+# (render.yaml, DEPLOY_RENDER.md). The merge is always conflict-free because
+# those files do not exist on main (they were added after the branch-base commit).
+#
+# GITHUB_TOKEN cannot push to branches with "Require a pull request before
+# merging" protection. If that rule is enabled on `render`, create a fine-grained
+# PAT with Contents: Write, store it as secret SYNC_TOKEN, and replace
+# `${{ secrets.GITHUB_TOKEN }}` below with `${{ secrets.SYNC_TOKEN }}`.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Merge main → render
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge main into render
+        run: |
+          git checkout render
+          git merge origin/main --no-edit
+          git push origin render
