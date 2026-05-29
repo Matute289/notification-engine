@@ -66,6 +66,9 @@ func (r *userRepo) GetSetting(_ context.Context, _ int64, _ domain.Channel) (dom
 	return r.setting, nil
 }
 func (r *userRepo) UpsertSetting(_ context.Context, _ domain.Setting) error { return r.err }
+func (r *userRepo) DeleteDevice(_ context.Context, _ int64, _ domain.Channel, _ domain.DeviceToken) error {
+	return r.err
+}
 
 var _ port.UserRepository = (*userRepo)(nil)
 
@@ -78,6 +81,17 @@ type templateRepo struct {
 func (r *templateRepo) Create(_ context.Context, _ domain.Template) error { return r.err }
 func (r *templateRepo) Get(_ context.Context, _ uuid.UUID) (domain.Template, error) {
 	return r.t, r.err
+}
+func (r *templateRepo) Update(_ context.Context, _ domain.Template) error { return r.err }
+func (r *templateRepo) Delete(_ context.Context, _ uuid.UUID) error       { return r.err }
+func (r *templateRepo) List(_ context.Context, _ int64, _ *domain.Channel) ([]domain.Template, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.t.ID != (uuid.UUID{}) {
+		return []domain.Template{r.t}, nil
+	}
+	return nil, nil
 }
 
 var _ port.TemplateRepository = (*templateRepo)(nil)
