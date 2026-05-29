@@ -1,0 +1,253 @@
+# Render Blueprint — NotificationEngine
+#
+# Postgres and Redis are provisioned by Render (managed).
+# RabbitMQ → CloudAMQP (https://cloudamqp.com, free "Lemur" plan)
+# MongoDB  → MongoDB Atlas (https://mongodb.com/atlas, free M0 cluster)
+#
+# Before applying:
+#   1. Create a CloudAMQP instance → copy the AMQP URL (amqps://...)
+#   2. Create a MongoDB Atlas cluster → copy the connection string (mongodb+srv://...)
+#   3. Render dashboard → New → Blueprint → select this repo
+#   4. Fill in the sync:false secrets in the form → Apply
+
+databases:
+  - name: notification-postgres
+    databaseName: notif
+    user: notif
+    plan: free           # upgrade to "starter" or "standard" for production
+
+envVarGroups:
+  # Shared by API + all workers. Set RABBITMQ_URL and MONGODB_URI here once.
+  - name: worker-shared
+    envVars:
+      # These are filled via the Blueprint form when the API service is created.
+      # Workers inherit them from this group — after Blueprint apply, confirm
+      # these values appear in Render dashboard → Env Groups → worker-shared.
+      - key: RABBITMQ_URL
+        sync: false       # amqps://user:pass@host/vhost  (from CloudAMQP)
+      - key: MONGODB_URI
+        sync: false       # mongodb+srv://user:ENCODED_PASS@cluster/ — see note below
+      - key: MONGODB_DATABASE
+        value: notification_engine
+      - key: WORKER_CONCURRENCY
+        value: "8"
+      - key: MAX_RETRIES
+        value: "5"
+      - key: DEDUPE_TTL
+        value: 24h
+      - key: PROVIDER_MODE
+        value: mock       # change to "real" for production
+      - key: LOG_LEVEL
+        value: info
+      - key: RATELIMIT_WINDOW
+        value: 1h
+      - key: RATELIMIT_PUSH_PER_HOUR
+        value: "20"
+      - key: RATELIMIT_SMS_PER_HOUR
+        value: "5"
+      - key: RATELIMIT_EMAIL_PER_HOUR
+        value: "10"
+      - key: JANITOR_INTERVAL
+        value: 30s
+      - key: JANITOR_STUCK_THRESHOLD
+        value: 5m
+      - key: JANITOR_BATCH_SIZE
+        value: "100"
+      - key: RELAY_INTERVAL
+        value: 500ms
+      - key: RELAY_BATCH_SIZE
+        value: "100"
+
+services:
+  # ─── Redis (Render Key Value) ─────────────────────────────────────
+  - type: redis
+    name: notification-redis
+    plan: free           # upgrade for production
+    ipAllowList: []      # private network only
+
+  # ─── API (web service) ────────────────────────────────────────────
+  - type: web
+    name: notification-api
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.api
+    branch: render
+    plan: starter
+    healthCheckPath: /healthz
+    envVars:
+      - fromGroup: worker-shared
+      - key: HTTP_ADDR
+        value: :8080
+      # RABBITMQ_URL and MONGODB_URI are also set here at the service level so
+      # Render's Blueprint form shows them — service-level value takes precedence
+      # over the env group value for this service.
+      - key: RABBITMQ_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: connectionString   # redis://host:port — parsed by Connect()
+      - key: TEMPLATE_CACHE_TTL
+        value: 5m
+      - key: APP_KEY_RATE_LIMIT
+        value: "0"
+      - key: APP_KEY_RATE_WINDOW
+        value: 1s
+      - key: HMAC_SKEW
+        value: 5m
+      # ── Auth ──
+      - key: CLERK_ISSUER
+        sync: false       # e.g. https://<slug>.clerk.accounts.dev
+      - key: CLERK_AUTHORIZED_PARTIES
+        sync: false       # comma-separated allowed origins (can be left empty)
+      - key: APP_CLIENTS
+        sync: false       # key1:secret1,... (optional when CLERK_ISSUER is set)
+
+  # ─── Per-channel workers ───────────────────────────────────────────
+  - type: worker
+    name: worker-push-ios
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.worker
+    branch: render
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+      - key: RABBITMQ_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: connectionString
+      - key: WORKER_CHANNEL
+        value: push_ios
+
+  - type: worker
+    name: worker-push-android
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.worker
+    branch: render
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+      - key: RABBITMQ_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: connectionString
+      - key: WORKER_CHANNEL
+        value: push_android
+
+  - type: worker
+    name: worker-sms
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.worker
+    branch: render
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+      - key: RABBITMQ_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: connectionString
+      - key: WORKER_CHANNEL
+        value: sms
+
+  - type: worker
+    name: worker-email
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.worker
+    branch: render
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+      - key: RABBITMQ_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: connectionString
+      - key: WORKER_CHANNEL
+        value: email
+
+  # ─── Janitor ──────────────────────────────────────────────────────
+  - type: worker
+    name: janitor
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.janitor
+    branch: render
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+      - key: RABBITMQ_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: connectionString
+
+  # ─── Outbox relay ─────────────────────────────────────────────────
+  - type: worker
+    name: outbox-relay
+    runtime: docker
+    dockerfilePath: ./deploy/docker/Dockerfile.outbox-relay
+    branch: render
+    plan: starter
+    envVars:
+      - fromGroup: worker-shared
+      - key: RABBITMQ_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: POSTGRES_DSN
+        fromDatabase:
+          name: notification-postgres
+          property: connectionString
+      - key: REDIS_ADDR
+        fromService:
+          name: notification-redis
+          type: redis
+          property: connectionString
