@@ -186,3 +186,92 @@ func TestSubmitNotification_CrossUser_403(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&errBody))
 	require.Equal(t, "forbidden", errBody.Code)
 }
+
+func TestUpdateTemplate_HappyPath_200(t *testing.T) {
+	// Create a template first.
+	name := "it-upd-" + uuid.NewString()
+	createBody := []byte(fmt.Sprintf(`{"name":"%s","channel":"sms","body":"Original body.","version":1}`, name))
+	resp, err := http.DefaultClient.Do(signedRequestOnBehalf(t, "POST", "/v1/templates", "42", createBody))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+
+	// Update it.
+	updateBody := []byte(`{"name":"updated-name","body":"Updated body."}`)
+	resp2, err := http.DefaultClient.Do(signedRequestOnBehalf(t, "PUT", "/v1/templates/"+created.ID, "42", updateBody))
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+
+	var updated struct {
+		Name string `json:"name"`
+		Body string `json:"body"`
+	}
+	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&updated))
+	require.Equal(t, "updated-name", updated.Name)
+	require.Equal(t, "Updated body.", updated.Body)
+}
+
+func TestListTemplates_GroupedByChannel_200(t *testing.T) {
+	ownerID := "43"
+	suffix := uuid.NewString()
+
+	// Create 2 SMS and 1 email template under the same owner.
+	for i, ch := range []string{"sms", "sms", "email"} {
+		body := []byte(fmt.Sprintf(`{"name":"it-list-%d-%s","channel":"%s","body":"Body.","version":1}`, i, suffix, ch))
+		resp, err := http.DefaultClient.Do(signedRequestOnBehalf(t, "POST", "/v1/templates", ownerID, body))
+		require.NoError(t, err)
+		resp.Body.Close()
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+	}
+
+	// List all.
+	resp, err := http.DefaultClient.Do(signedRequestOnBehalf(t, "GET", "/v1/templates", ownerID, nil))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var grouped map[string][]struct{ Name string `json:"name"` }
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&grouped))
+	require.GreaterOrEqual(t, len(grouped["sms"]), 2)
+	require.GreaterOrEqual(t, len(grouped["email"]), 1)
+
+	// Filter by channel.
+	resp2, err := http.DefaultClient.Do(signedRequestOnBehalf(t, "GET", "/v1/templates?channel=sms", ownerID, nil))
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+
+	var smsOnly map[string][]struct{ Name string `json:"name"` }
+	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&smsOnly))
+	require.NotContains(t, smsOnly, "email")
+}
+
+func TestDeleteDevice_HappyPath_204(t *testing.T) {
+	const token = "integration-delete-test-token"
+
+	// Register the device.
+	regBody := []byte(fmt.Sprintf(`{"device_token":"%s","channel":"push_ios"}`, token))
+	resp, err := http.DefaultClient.Do(signedRequestOnBehalf(t, "POST", "/v1/users/42/devices", "42", regBody))
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	// Delete it.
+	delBody := []byte(fmt.Sprintf(`{"device_token":"%s","channel":"push_ios"}`, token))
+	resp2, err := http.DefaultClient.Do(signedRequestOnBehalf(t, "DELETE", "/v1/users/42/devices", "42", delBody))
+	require.NoError(t, err)
+	resp2.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp2.StatusCode)
+
+	// Second delete must return 404.
+	resp3, err := http.DefaultClient.Do(signedRequestOnBehalf(t, "DELETE", "/v1/users/42/devices", "42", delBody))
+	require.NoError(t, err)
+	defer resp3.Body.Close()
+	require.Equal(t, http.StatusNotFound, resp3.StatusCode)
+}
