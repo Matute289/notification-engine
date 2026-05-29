@@ -7,15 +7,22 @@ import "fmt"
 type Channel string
 
 const (
-	ChannelPushIOS     Channel = "push_ios"
-	ChannelPushAndroid Channel = "push_android"
-	ChannelSMS         Channel = "sms"
-	ChannelEmail       Channel = "email"
+	ChannelPushIOS           Channel = "push_ios"
+	ChannelPushAndroid       Channel = "push_android"
+	ChannelSMS               Channel = "sms"
+	ChannelEmail             Channel = "email"
+	ChannelTelegram          Channel = "telegram"
+	ChannelWhatsApp          Channel = "whatsapp"
+	ChannelLine              Channel = "line"
+	ChannelFacebookMessenger Channel = "facebook_messenger"
 )
 
 // AllChannels returns every supported channel in deterministic order.
 func AllChannels() []Channel {
-	return []Channel{ChannelPushIOS, ChannelPushAndroid, ChannelSMS, ChannelEmail}
+	return []Channel{
+		ChannelPushIOS, ChannelPushAndroid, ChannelSMS, ChannelEmail,
+		ChannelTelegram, ChannelWhatsApp, ChannelLine, ChannelFacebookMessenger,
+	}
 }
 
 // ParseChannel returns the typed channel for s or an error if unknown.
@@ -27,10 +34,11 @@ func ParseChannel(s string) (Channel, error) {
 	return c, nil
 }
 
-// Valid returns true for the four supported channels.
+// Valid returns true for all supported channels.
 func (c Channel) Valid() bool {
 	switch c {
-	case ChannelPushIOS, ChannelPushAndroid, ChannelSMS, ChannelEmail:
+	case ChannelPushIOS, ChannelPushAndroid, ChannelSMS, ChannelEmail,
+		ChannelTelegram, ChannelWhatsApp, ChannelLine, ChannelFacebookMessenger:
 		return true
 	}
 	return false
