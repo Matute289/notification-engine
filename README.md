@@ -446,4 +446,4 @@ For a detailed breakdown of layers, ports, aggregates, and the state machine, se
 
 ## License
 
-(none specified)
+MIT License — see [LICENSE](./LICENSE) for the full text.

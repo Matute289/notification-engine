@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: tidy build test test-integration lint up down logs migrate seed sign curl-submit
+.PHONY: tidy build test test-integration lint up down logs migrate curl-submit
 
 tidy:
 	go mod tidy
@@ -18,6 +18,11 @@ test-integration:
 lint:
 	go vet ./...
 
+# Bring up the full stack: postgres, mongo, redis, rabbitmq, prometheus,
+# migrations, api, 8 workers (push-ios, push-android, sms, email,
+# telegram, whatsapp, line, facebook-messenger), janitor, outbox-relay.
+# Social channel workers use PROVIDER_MODE=mock by default; supply real
+# credentials via environment overrides or .env.example to use live APIs.
 up:
 	docker compose -f deploy/compose/docker-compose.yml up --build -d
 
@@ -31,7 +36,8 @@ logs:
 migrate:
 	docker compose -f deploy/compose/docker-compose.yml run --rm migrate
 
-# Sign and submit a sample notification (requires curl + python3 for hmac).
+# Sign and submit a sample notification (requires curl + openssl).
+# Override: make curl-submit CHANNEL=telegram BODY='...'
 APP_KEY ?= demo-app
 APP_SECRET ?= demo-secret-please-change
 HOST ?= http://localhost:8080

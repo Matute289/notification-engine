@@ -142,6 +142,67 @@ services:
       api:
         condition: service_started
 
+  worker-telegram:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.worker
+    env_file: ../../.env.example
+    environment:
+      POSTGRES_DSN: postgres://notif:notif@postgres:5432/notif?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://notif:notif@rabbitmq:5672/
+      WORKER_CHANNEL: telegram
+      # TELEGRAM_BOT_TOKEN: set in .env or override here for PROVIDER_MODE=real
+    depends_on:
+      api:
+        condition: service_started
+
+  worker-whatsapp:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.worker
+    env_file: ../../.env.example
+    environment:
+      POSTGRES_DSN: postgres://notif:notif@postgres:5432/notif?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://notif:notif@rabbitmq:5672/
+      WORKER_CHANNEL: whatsapp
+      # WHATSAPP_PHONE_NUMBER_ID: set in .env or override here for PROVIDER_MODE=real
+      # WHATSAPP_ACCESS_TOKEN: set in .env or override here for PROVIDER_MODE=real
+    depends_on:
+      api:
+        condition: service_started
+
+  worker-line:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.worker
+    env_file: ../../.env.example
+    environment:
+      POSTGRES_DSN: postgres://notif:notif@postgres:5432/notif?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://notif:notif@rabbitmq:5672/
+      WORKER_CHANNEL: line
+      # LINE_CHANNEL_ACCESS_TOKEN: set in .env or override here for PROVIDER_MODE=real
+    depends_on:
+      api:
+        condition: service_started
+
+  worker-facebook-messenger:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.worker
+    env_file: ../../.env.example
+    environment:
+      POSTGRES_DSN: postgres://notif:notif@postgres:5432/notif?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://notif:notif@rabbitmq:5672/
+      WORKER_CHANNEL: facebook_messenger
+      # FB_PAGE_ACCESS_TOKEN: set in .env or override here for PROVIDER_MODE=real
+    depends_on:
+      api:
+        condition: service_started
+
   janitor:
     build:
       context: ../..
