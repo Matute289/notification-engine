@@ -1,15 +1,11 @@
 name: Release to Render
 
-# Manual release gate: bumps a render-vX.Y.Z tag on the render branch and
-# fires the Render Deploy Hook. Requires:
-#   - RENDER_DEPLOY_HOOK_URL secret  (Render → Service → Settings → Deploy Hook)
-#
-# How to get the Deploy Hook URL:
-#   1. Render dashboard → notification-api (or any service) → Settings → Deploy Hook
-#   2. Copy the URL (looks like https://api.render.com/deploy/srv-xxx?key=yyy)
-#   3. GitHub repo → Settings → Secrets → Actions → New secret → RENDER_DEPLOY_HOOK_URL
-#   4. Disable "Auto-Deploy" on the render branch in Render so this workflow
-#      is the sole trigger (avoids double-deploys on every sync).
+# Manual release gate: runs tests on the render branch and bumps a
+# render-vX.Y.Z tag. The deploy itself is handled by Render's Auto-Deploy
+# on the render branch — sync-render.yml already pushed render when main
+# was updated, so the deploy is already running (or done) by the time this
+# tag is created. This workflow exists solely to produce an immutable release
+# marker and to gate the tag behind a passing test run.
 
 on:
   workflow_dispatch:
@@ -23,7 +19,7 @@ permissions:
 
 jobs:
   release:
-    name: Tag & deploy render-v${{ github.event.inputs.version }}
+    name: Tag render-v${{ github.event.inputs.version }}
     runs-on: ubuntu-latest
 
     steps:
@@ -48,13 +44,3 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
-
-      - name: Trigger Render deploy
-        run: |
-          HTTP_STATUS=$(curl -fsS -o /dev/null -w "%{http_code}" \
-            "${{ secrets.RENDER_DEPLOY_HOOK_URL }}")
-          echo "Deploy hook responded: $HTTP_STATUS"
-          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
-            echo "Deploy hook failed with status $HTTP_STATUS" >&2
-            exit 1
-          fi
