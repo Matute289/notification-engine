@@ -1,5 +1,12 @@
--- DEFAULT 0 satisfies the NOT NULL constraint for existing rows during the ALTER.
--- The default is dropped immediately so future INSERTs that omit owner_user_id
--- fail at the DB level rather than silently storing the invalid sentinel 0.
-ALTER TABLE notification_templates ADD COLUMN IF NOT EXISTS owner_user_id BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE notification_templates ALTER COLUMN owner_user_id DROP DEFAULT;
+-- +goose Up
+-- +goose StatementBegin
+-- No-op: notification_templates was moved to MongoDB and the Postgres table
+-- was dropped in 0004_template_to_mongodb.sql. The owner_user_id column lives
+-- on the MongoDB document instead. This migration intentionally does nothing.
+SELECT 1;
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+SELECT 1;
+-- +goose StatementEnd
