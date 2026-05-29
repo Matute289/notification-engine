@@ -160,13 +160,13 @@ func (u *SubmitNotification) hydrateRecipient(ctx context.Context, ch domain.Cha
 			return fmt.Errorf("hydrate email: %w", err)
 		}
 		r.Email = usr.Email
-	case domain.ChannelSMS:
+	case domain.ChannelSMS, domain.ChannelWhatsApp:
 		if !r.Phone.Empty() {
 			return nil
 		}
 		usr, err := u.Users.GetUser(ctx, uid)
 		if err != nil {
-			return fmt.Errorf("hydrate sms: %w", err)
+			return fmt.Errorf("hydrate phone: %w", err)
 		}
 		r.Phone = usr.FullPhone()
 	case domain.ChannelPushIOS, domain.ChannelPushAndroid:
@@ -181,6 +181,10 @@ func (u *SubmitNotification) hydrateRecipient(ctx context.Context, ch domain.Cha
 			return fmt.Errorf("%w: no registered device for user %d on %s", domain.ErrInvalidInput, uid, ch)
 		}
 		r.DeviceToken = devices[0].DeviceToken
+	case domain.ChannelTelegram, domain.ChannelLine, domain.ChannelFacebookMessenger:
+		if r.MessagingID == "" {
+			return fmt.Errorf("%w: messaging_id required for %s channel — cannot be resolved from user record", domain.ErrInvalidInput, ch)
+		}
 	}
 	return nil
 }
