@@ -59,8 +59,12 @@ func NewRouter(
 			r.Get("/notifications/{id}", h.GetNotification)
 			r.Post("/templates", h.CreateTemplate)
 			r.Get("/templates/{id}", h.GetTemplate)
+			r.Put("/templates/{id}", h.UpdateTemplate)
+			r.Delete("/templates/{id}", h.DeleteTemplate)
+			r.Get("/templates", h.ListTemplates)
 			r.Put("/users/{id}/settings", h.UpdateSetting)
 			r.Post("/users/{id}/devices", h.RegisterDevice)
+			r.Delete("/users/{id}/devices", h.DeleteDevice)
 		})
 	})
 	return r
