@@ -14,12 +14,16 @@ import (
 // Handler holds references to every service the HTTP surface exposes.
 // Fields use the Svc suffix to avoid clashing with the identically-named handler methods.
 type Handler struct {
-	SubmitSvc         *service.SubmitNotification
-	GetSvc            *service.GetNotification
-	CreateTemplateSvc *service.CreateTemplate
-	GetTemplateSvc    *service.GetTemplate
-	UpdateSettingSvc  *service.UpdateSetting
-	RegisterDeviceSvc *service.RegisterDevice
+	SubmitSvc          *service.SubmitNotification
+	GetSvc             *service.GetNotification
+	CreateTemplateSvc  *service.CreateTemplate
+	GetTemplateSvc     *service.GetTemplate
+	UpdateTemplateSvc  *service.UpdateTemplate
+	DeleteTemplateSvc  *service.DeleteTemplate
+	ListTemplatesSvc   *service.ListTemplates
+	UpdateSettingSvc   *service.UpdateSetting
+	RegisterDeviceSvc  *service.RegisterDevice
+	DeleteDeviceSvc    *service.DeleteDevice
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
