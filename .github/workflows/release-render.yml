@@ -1,0 +1,60 @@
+name: Release to Render
+
+# Manual release gate: bumps a render-vX.Y.Z tag on the render branch and
+# fires the Render Deploy Hook. Requires:
+#   - RENDER_DEPLOY_HOOK_URL secret  (Render → Service → Settings → Deploy Hook)
+#
+# How to get the Deploy Hook URL:
+#   1. Render dashboard → notification-api (or any service) → Settings → Deploy Hook
+#   2. Copy the URL (looks like https://api.render.com/deploy/srv-xxx?key=yyy)
+#   3. GitHub repo → Settings → Secrets → Actions → New secret → RENDER_DEPLOY_HOOK_URL
+#   4. Disable "Auto-Deploy" on the render branch in Render so this workflow
+#      is the sole trigger (avoids double-deploys on every sync).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic version to tag (e.g. 1.2.3 — tag will be render-v1.2.3)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Tag & deploy render-v${{ github.event.inputs.version }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: render
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests on render HEAD
+        run: go test -race -count=1 ./...
+
+      - name: Create and push tag
+        run: |
+          TAG="render-v${{ github.event.inputs.version }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Trigger Render deploy
+        run: |
+          HTTP_STATUS=$(curl -fsS -o /dev/null -w "%{http_code}" \
+            "${{ secrets.RENDER_DEPLOY_HOOK_URL }}")
+          echo "Deploy hook responded: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "Deploy hook failed with status $HTTP_STATUS" >&2
+            exit 1
+          fi

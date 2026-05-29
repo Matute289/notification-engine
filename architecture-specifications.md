@@ -25,7 +25,7 @@ internal services ──► HTTP API ──► message queue ──► per-chann
 - **Message queue:** Works with RabbitMQ locally (docker-compose), but `EventPublisher` port supports any MQ (Kafka, SQS, GCP Pub/Sub, etc.).
 - **Document store:** Works with MongoDB (externally), but `TemplateRepository` port could use DynamoDB, Firestore, or Postgres JSONB.
 - **Authentication:** Works with any JWT issuer or HMAC-only mode; no vendor lock-in.
-- **Hosting:** Binaries run anywhere (Render, AWS, GCP, Azure, Kubernetes, VPS, on-premises).
+- **Hosting:** Binaries run anywhere (AWS, GCP, Azure, Kubernetes, VPS, on-premises).
 
 Locally everything (Postgres, Redis, RabbitMQ, the API, four workers, a
 one-shot migration job) runs from a single `docker compose up`. A **mock
@@ -580,7 +580,7 @@ RELAY_INTERVAL=500ms
 **Flexibility notes:**
 - Choose any Postgres, Redis, RabbitMQ, or MongoDB provider — the code doesn't care which.
 - Authentication: use JWT (any OpenID issuer), HMAC (no external deps), or both.
-- Render, docker-compose, and Kubernetes deployments all use the same binaries and env vars.
+- docker-compose and Kubernetes deployments all use the same binaries and env vars.
 
 ---
 
@@ -608,25 +608,9 @@ healthy redis + rabbit; workers wait on api).
 
 ### 12.2 Production deployment
 
-**The binaries are cloud-agnostic.** Deploy to any infrastructure by wiring environment variables. Example platforms:
+**The binaries are cloud-agnostic.** Deploy to any infrastructure by wiring environment variables. Platform-specific deployment blueprints live in dedicated branches (e.g., the `render` branch contains `render.yaml` + `DEPLOY_RENDER.md`).
 
-#### Render (example provided)
-
-`render.yaml` at the repo root is a **Render Blueprint** (infrastructure-as-code). It declares:
-
-- **Databases:** Postgres (Render-managed)
-- **Cache:** Redis (Render-managed)
-- **External services** (choose your providers, not managed by Render):
-  - **RabbitMQ:** CloudAMQP (https://cloudamqp.com) is one free option; use any RabbitMQ provider or self-host.
-  - **MongoDB:** MongoDB Atlas (https://mongodb.com/atlas) is one free option; use any MongoDB provider or self-host.
-  - **Authentication:** (optional) Clerk or any JWT issuer; or HMAC-only mode.
-- **Compute:** API web service + 6 background workers (4 per-channel + janitor + outbox-relay)
-
-Secret env vars (`RABBITMQ_URL`, `MONGODB_URI`, `CLERK_ISSUER`, `APP_CLIENTS`) are marked `sync: false` — set in the Render dashboard at deploy time.
-
-**Known limitation:** `sync: false` vars in `envVarGroups` do not surface in the Blueprint form; must be set in Render dashboard **after** Blueprint apply under Env Groups → worker-shared.
-
-#### Other platforms
+#### Platforms
 
 The same Docker images run on:
 

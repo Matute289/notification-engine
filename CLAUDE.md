@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Go notification engine implementing the design from chapter 10 of *System Design Interview Vol. 1* (`Notification_System.pdf` in this repo). API service + per-channel workers, all runnable via docker-compose. Channels: iOS push, Android push, SMS, email. Locally everything runs with **mock providers** so the stack works without third-party credentials.
 
-**Infrastructure-agnostic:** Works with any Postgres, Redis, RabbitMQ, or MongoDB provider. Supports any JWT issuer or HMAC-only auth. Deploys to Render, AWS, GCP, Azure, Kubernetes, VPS, or on-premises — just wire env vars.
+**Infrastructure-agnostic:** Works with any Postgres, Redis, RabbitMQ, or MongoDB provider. Supports any JWT issuer or HMAC-only auth. Deploys to AWS, GCP, Azure, Kubernetes, VPS, or on-premises — just wire env vars. Platform-specific blueprints live in dedicated branches (e.g., the `render` branch).
 
 Read `CLAUDE_CONTEXT.md` first — it captures the working design, the layer rules, file index, and outstanding follow-ups. The end-user-facing design lives in `architecture-specifications.md`.
 

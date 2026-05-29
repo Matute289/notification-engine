@@ -2,7 +2,7 @@
 
 A Go service that delivers notifications to end users over four channels — **iOS push** (APNs), **Android push** (FCM), **SMS**, and **email** — via an asynchronous, queue-backed pipeline. Implements the design from chapter 10 of *System Design Interview Vol. 1* (`Notification_System.pdf` in this repo).
 
-**Infrastructure-agnostic:** Works with any Postgres, Redis, RabbitMQ, and MongoDB providers. Supports any JWT issuer or HMAC-only auth. Deploy to Render, AWS, GCP, Azure, Kubernetes, VPS, or on-premises.
+**Infrastructure-agnostic:** Works with any Postgres, Redis, RabbitMQ, and MongoDB providers. Supports any JWT issuer or HMAC-only auth. Deploy to AWS, GCP, Azure, Kubernetes, VPS, or on-premises.
 
 Locally everything runs from a single `docker compose up` with **mock providers**, so the full pipeline works without any third-party credentials.
 
@@ -31,33 +31,9 @@ make down
 
 ## Deploying to production
 
-The system is **infrastructure-agnostic** — you can deploy to any cloud provider or on-premises. A `render.yaml` Blueprint is provided as an example for **Render**, but the same Go binaries work anywhere.
+The same Docker images run on any infrastructure — just wire the connection strings via environment variables. Platform-specific deployment blueprints live in dedicated branches; for example, the [`render` branch](../../tree/render) contains a `render.yaml` Blueprint and a `DEPLOY_RENDER.md` step-by-step guide for deploying to Render.
 
-### Example: Deploying to Render
-
-The `render.yaml` Blueprint at the repo root shows one possible deployment stack (Render-managed Postgres + Redis, with external third-party services for RabbitMQ, MongoDB, and auth):
-
-1. **Set up external services** (pick your preferred providers — these are examples, not requirements):
-   - **Message queue:** RabbitMQ can run anywhere. Example: CloudAMQP (https://cloudamqp.com, free "Lemur" plan) or your own RabbitMQ instance.
-   - **Document store:** MongoDB can run anywhere. Example: MongoDB Atlas (https://mongodb.com/atlas, free M0 cluster) or self-hosted MongoDB.
-   - **Authentication** (optional): Clerk (https://clerk.dev) or any JWT issuer you control, or use HMAC-only mode (no Clerk).
-
-2. **Deploy via Render:**
-   - Render dashboard → New → Blueprint → select this repo
-   - Fill in the `sync:false` secrets in the form:
-     - `RABBITMQ_URL` (from your RabbitMQ provider)
-     - `MONGODB_URI` (from your MongoDB provider)
-     - `CLERK_ISSUER` (from your JWT provider, or leave empty for HMAC-only)
-     - `CLERK_AUTHORIZED_PARTIES` (comma-separated allowed origins, optional)
-     - `APP_CLIENTS` (for HMAC clients; optional if using Clerk JWT)
-   - Click Apply
-
-3. **Verify deployment:**
-   - Check that the `notification-api` web service is running on its public URL
-   - Check that all 6 background workers are running (status page shows 4 workers + janitor + outbox-relay)
-   - Note: Workers will show errors until you manually set `RABBITMQ_URL` and `MONGODB_URI` in Render dashboard → Environment Groups → `worker-shared`
-
-### Deploying elsewhere
+### Platforms
 
 The same Docker images work on:
 - **AWS** (ECS, EC2, Elastic Beanstalk) + RDS Postgres + ElastiCache Redis + SQS or Kafka for queuing
