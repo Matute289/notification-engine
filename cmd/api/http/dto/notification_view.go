@@ -1,6 +1,8 @@
 package dto
 
 import (
+	"time"
+
 	"github.com/example/notification-engine/internal/domain"
 	"github.com/google/uuid"
 )
@@ -17,6 +19,8 @@ type NotificationView struct {
 	Recipient  Recipient         `json:"recipient"`
 	Variables  map[string]string `json:"variables,omitempty"`
 	TemplateID *uuid.UUID        `json:"template_id,omitempty"`
+	CreatedAt  time.Time         `json:"created_at"`
+	UpdatedAt  time.Time         `json:"updated_at"`
 }
 
 func ToView(n *domain.Notification) NotificationView {
@@ -31,6 +35,8 @@ func ToView(n *domain.Notification) NotificationView {
 		LastError:  n.LastError,
 		Variables:  n.Variables,
 		TemplateID: n.TemplateID,
+		CreatedAt:  n.CreatedAt,
+		UpdatedAt:  n.UpdatedAt,
 		Recipient: Recipient{
 			UserID:      n.Recipient.UserID,
 			Email:       string(n.Recipient.Email),
