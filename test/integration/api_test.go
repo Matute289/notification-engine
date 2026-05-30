@@ -17,6 +17,7 @@ import (
 
 	"github.com/example/notification-engine/internal/platform/auth"
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -283,4 +284,168 @@ func TestDeleteDevice_HappyPath_204(t *testing.T) {
 	require.NoError(t, err)
 	defer resp3.Body.Close()
 	require.Equal(t, http.StatusNotFound, resp3.StatusCode)
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/notifications
+// ---------------------------------------------------------------------------
+
+func TestListNotifications_EmptyForNewUser(t *testing.T) {
+	// A fresh user with no notifications should get an empty list.
+	resp, err := http.DefaultClient.Do(signedRequestOnBehalf(t, "GET", "/v1/notifications?limit=10", "999", nil))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var out struct {
+		Items      []any  `json:"items"`
+		NextCursor string `json:"next_cursor"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	assert.Empty(t, out.Items)
+	assert.Equal(t, "", out.NextCursor)
+}
+
+func TestListNotifications_Pagination(t *testing.T) {
+	// Submit 25 notifications, paginate 10+10+5.
+	userID := "888"
+	for i := range 25 {
+		body := []byte(fmt.Sprintf(`{
+			"event_id": "page-test-%d",
+			"channel": "email",
+			"recipient": {"user_id": %s}
+		}`, i, userID))
+		r := signedRequestOnBehalf(t, "POST", "/v1/notifications", userID, body)
+		resp, err := http.DefaultClient.Do(r)
+		require.NoError(t, err)
+		resp.Body.Close()
+		require.True(t, resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusOK)
+	}
+
+	var allIDs []string
+	cursor := ""
+	for page := range 3 {
+		url := "/v1/notifications?limit=10"
+		if cursor != "" {
+			url += "&cursor=" + cursor
+		}
+		resp, err := http.DefaultClient.Do(signedRequestOnBehalf(t, "GET", url, userID, nil))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode, "page %d", page)
+
+		var out struct {
+			Items      []struct{ ID string `json:"id"` } `json:"items"`
+			NextCursor string                             `json:"next_cursor"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+
+		for _, item := range out.Items {
+			allIDs = append(allIDs, item.ID)
+		}
+		cursor = out.NextCursor
+
+		if page < 2 {
+			assert.NotEmpty(t, out.NextCursor, "expected next cursor on page %d", page)
+			assert.Len(t, out.Items, 10)
+		} else {
+			assert.Equal(t, "", out.NextCursor, "no more pages after page 3")
+			assert.Len(t, out.Items, 5)
+		}
+	}
+	assert.Len(t, allIDs, 25)
+	// Verify uniqueness (no duplicates across pages).
+	seen := make(map[string]bool)
+	for _, id := range allIDs {
+		assert.False(t, seen[id], "duplicate notification id %s across pages", id)
+		seen[id] = true
+	}
+}
+
+func TestListNotifications_FilterByChannel(t *testing.T) {
+	userID := "777"
+	for _, ch := range []string{"email", "sms"} {
+		body := []byte(fmt.Sprintf(`{"event_id":"filter-ch-%s","channel":"%s","recipient":{"user_id":%s}}`, ch, ch, userID))
+		resp, err := http.DefaultClient.Do(signedRequestOnBehalf(t, "POST", "/v1/notifications", userID, body))
+		require.NoError(t, err)
+		resp.Body.Close()
+	}
+
+	resp, err := http.DefaultClient.Do(
+		signedRequestOnBehalf(t, "GET", "/v1/notifications?channel=email&limit=20", userID, nil),
+	)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var out struct {
+		Items []struct{ Channel string `json:"channel"` } `json:"items"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	for _, item := range out.Items {
+		assert.Equal(t, "email", item.Channel)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/users/{id}/settings
+// ---------------------------------------------------------------------------
+
+func TestGetSettings_DefaultsForNewUser(t *testing.T) {
+	userID := "555"
+	resp, err := http.DefaultClient.Do(signedRequestOnBehalf(t, "GET", "/v1/users/"+userID+"/settings", userID, nil))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var settings []struct {
+		Channel   string  `json:"channel"`
+		OptIn     bool    `json:"opt_in"`
+		UpdatedAt *string `json:"updated_at"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&settings))
+	assert.Len(t, settings, 8) // all channels
+	for _, s := range settings {
+		assert.True(t, s.OptIn, "channel %s should default to opt-in", s.Channel)
+		assert.Nil(t, s.UpdatedAt, "default settings should have null updated_at")
+	}
+}
+
+func TestGetSettings_AfterOptOut(t *testing.T) {
+	userID := "444"
+	// Opt out of sms.
+	optOutBody := []byte(`{"channel":"sms","opt_in":false}`)
+	r := signedRequestOnBehalf(t, "PUT", "/v1/users/"+userID+"/settings", userID, optOutBody)
+	resp, err := http.DefaultClient.Do(r)
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	// Now list all settings and check sms is false, others are true.
+	resp2, err := http.DefaultClient.Do(signedRequestOnBehalf(t, "GET", "/v1/users/"+userID+"/settings", userID, nil))
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+
+	var settings []struct {
+		Channel   string  `json:"channel"`
+		OptIn     bool    `json:"opt_in"`
+		UpdatedAt *string `json:"updated_at"`
+	}
+	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&settings))
+	assert.Len(t, settings, 8)
+
+	byChannel := make(map[string]struct {
+		OptIn     bool
+		UpdatedAt *string
+	})
+	for _, s := range settings {
+		byChannel[s.Channel] = struct {
+			OptIn     bool
+			UpdatedAt *string
+		}{s.OptIn, s.UpdatedAt}
+	}
+	assert.False(t, byChannel["sms"].OptIn)
+	assert.NotNil(t, byChannel["sms"].UpdatedAt)
+	assert.True(t, byChannel["email"].OptIn)
 }
