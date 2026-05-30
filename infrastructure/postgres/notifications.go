@@ -279,7 +279,7 @@ func scanRow(rows pgx.Rows) (*domain.Notification, error) {
 	)
 	if err := rows.Scan(&n.ID, &eventID, &channel, &recipientRaw, &n.TemplateID, &varsRaw,
 		&n.Subject, &n.Body, &status, &n.Attempt, &n.LastError, &n.CreatedAt, &n.UpdatedAt); err != nil {
-		return nil, fmt.Errorf("scan stuck row: %w", err)
+		return nil, fmt.Errorf("scan notification row: %w", err)
 	}
 	n.EventID = domain.EventID(eventID)
 	n.Channel = domain.Channel(channel)
