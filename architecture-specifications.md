@@ -445,6 +445,99 @@ Every error response is `{"code":"...","message":"..."}`. Mapping
 
 ---
 
+## 5. Request Flows (HTTP endpoints)
+
+### 1. POST /v1/notifications — Submit Flow
+
+```
+Service HMAC + X-On-Behalf-Of-User → AuthMiddleware
+  ↓
+SubmitNotification handler
+  ├─ Parse + validate body (event_id, channel, recipient, template_id, variables)
+  ├─ SubmitNotification.Execute(ctx, input)
+  │   ├─ Deduper.Claim(event_id) → cache SETNX
+  │   ├─ RateLimiter.Allow(user_id, channel) → token bucket
+  │   ├─ NotificationRepository.GetUser(user_id) → hydrate recipient
+  │   ├─ TemplateCache.Get(template_id) → (domain.Template, L1 + L2)
+  │   ├─ TemplateRenderer.Render(template, variables)
+  │   ├─ Mark status enqueued
+  │   ├─ EventPublisher.Encode(notification) → AMQP payload
+  │   └─ TxNotificationRepository.SubmitWithOutbox(log_row, outbox_row) (atomic)
+  └─ Return NotificationResponse{id, status, duplicate}
+```
+
+### 2. GET /v1/notifications/{id} — Get Flow
+
+```
+Service HMAC + X-On-Behalf-Of-User → AuthMiddleware
+  ↓
+GetNotification handler
+  ├─ Parse {id} as UUID
+  ├─ NotificationRepository.Get(ctx, id) → domain.Notification
+  └─ Map domain.Notification → NotificationView
+  └─ Return 200 NotificationView
+```
+
+### 3. POST /v1/templates — Create Flow
+
+```
+Service HMAC + JWT → AuthMiddleware (identity.Subject = user_id or app_key)
+  ↓
+CreateTemplate handler
+  ├─ Parse + validate body (name, channel, subject, body, mediaURLs)
+  ├─ domain.NewTemplate(name, channel, body, …) → validates
+  ├─ TemplateRepository.Create(ctx, template) → persist to MongoDB
+  └─ Return 201 TemplateView
+```
+
+### 4. GET /v1/templates/{id} — Get Template Flow
+
+```
+Service HMAC + JWT → AuthMiddleware
+  ↓
+GetTemplate handler
+  ├─ Parse {id} as UUID
+  ├─ TemplateCache.Get(id) → (domain.Template, L2 Redis + L1 in-process)
+  └─ Map domain.Template → TemplateView
+  └─ Return 200 TemplateView
+```
+
+### 5. GET /v1/notifications — List Flow
+
+```
+Service HMAC + X-On-Behalf-Of-User → AuthMiddleware
+  ↓
+ListNotifications handler
+  ├─ RequireServiceIdentity → extracts onBehalfOfUserID
+  ├─ Parse & validate query params (limit, cursor, channel, status, since, until)
+  ├─ ListNotifications.Execute(ctx, input)
+  │   └─ Clamp limit to [1, 100]
+  │   └─ NotificationRepository.List(ctx, params)
+  │       ├─ Decode cursor → (created_at, uuid)
+  │       ├─ Build dynamic WHERE clause with indexed (user_id, created_at, id)
+  │       ├─ Fetch limit+1 rows (keyset pagination)
+  │       └─ If len > limit: encode next cursor, trim result
+  └─ Map []domain.Notification → []NotificationView
+  └─ Return NotificationListResponse{items, next_cursor, limit}
+```
+
+### 6. GET /v1/users/{id}/settings — Get Settings Flow
+
+```
+Service HMAC + X-On-Behalf-Of-User → AuthMiddleware
+  ↓
+GetSettings handler
+  ├─ Parse {id} as int64
+  ├─ RequireUserOwnership → enforce ownership
+  ├─ ListSettings.Execute(ctx, userID)
+  │   └─ UserRepository.ListSettings(ctx, userID) → explicit rows
+  │   └─ Merge with domain.AllChannels() → fill defaults
+  └─ Map []domain.Setting → []SettingView (UpdatedAt nil when zero)
+  └─ Return 200 []SettingView
+```
+
+---
+
 ## 9. Cross-cutting Concerns
 
 ### 9.1 Idempotency

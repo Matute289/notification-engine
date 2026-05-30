@@ -23,12 +23,14 @@ NotificationEngine/
           error.go              (mapDomainError + writeError)
           submit_notification.go
           get_notification.go
+          list_notifications.go
           create_template.go
           get_template.go
           update_template.go
           delete_template.go
           list_templates.go
           update_setting.go
+          list_settings.go
           register_device.go
           delete_device.go
           fakes_test.go         (shared port fakes + withURLParam helper)
@@ -58,7 +60,7 @@ NotificationEngine/
   internal/
     domain/               ← entities, value objects, sentinel errors, state machine
     port/                 ← outbound port interfaces (what services need from infrastructure)
-    service/              ← one struct + Execute() per use case (SubmitNotification, ProcessNotification, UpdateTemplate, DeleteTemplate, ListTemplates, DeleteDevice, …)
+    service/              ← one struct + Execute() per use case (SubmitNotification, ProcessNotification, ListNotifications, GetNotification, UpdateTemplate, DeleteTemplate, ListTemplates, ListSettings, DeleteDevice, …)
     platform/
       auth/               ← HMAC verifier + Clerk JWT verifier (ClerkVerifier)
       config/             ← env-based config loader
