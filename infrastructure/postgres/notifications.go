@@ -197,6 +197,14 @@ func (r *NotificationRepository) ListStuckInFlight(ctx context.Context, threshol
 	return out, rows.Err()
 }
 
+// List returns up to params.Limit notifications owned by params.UserID,
+// ordered by (created_at DESC, id DESC). nextCursor is empty when no further
+// page exists. The cursor is opaque to callers.
+func (r *NotificationRepository) List(ctx context.Context, params port.ListNotificationsParams) ([]domain.Notification, string, error) {
+	// TODO: Implement in Task 4
+	return nil, "", nil
+}
+
 // scanRow maps the standard 13-column SELECT (above) into a domain.Notification.
 func scanRow(rows pgx.Rows) (*domain.Notification, error) {
 	var (

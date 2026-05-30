@@ -106,6 +106,20 @@ func (f *fakeNotifications) ListStuckInFlight(_ context.Context, threshold time.
 	return out, nil
 }
 
+func (f *fakeNotifications) List(_ context.Context, params port.ListNotificationsParams) ([]domain.Notification, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []domain.Notification
+	for _, n := range f.byID {
+		if n.Recipient.UserID == nil || *n.Recipient.UserID != params.UserID {
+			continue
+		}
+		out = append(out, *n)
+	}
+	// No cursor simulation in unit-test fake; integration tests cover cursor correctness.
+	return out, "", nil
+}
+
 func (f *fakeNotifications) SubmitWithOutbox(_ context.Context, n *domain.Notification, payload []byte) error {
 	if f.createErr != nil {
 		return f.createErr
@@ -197,6 +211,14 @@ func (f *fakeUsers) UpsertSetting(_ context.Context, s domain.Setting) error {
 	}
 	f.settings[s.UserID][s.Channel] = s
 	return nil
+}
+
+func (f *fakeUsers) ListSettings(_ context.Context, userID int64) ([]domain.Setting, error) {
+	var out []domain.Setting
+	for _, s := range f.settings[userID] {
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 func (f *fakeUsers) DeleteDevice(_ context.Context, userID int64, ch domain.Channel, token domain.DeviceToken) error {

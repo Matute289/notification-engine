@@ -118,3 +118,11 @@ func (r *UserRepository) DeleteDevice(ctx context.Context, userID int64, channel
 	}
 	return nil
 }
+
+// ListSettings returns the explicit opt-in rows for userID. Channels with no
+// row use the DefaultSetting (opt-in=true). The service layer fills in those
+// defaults so callers always see every channel.
+func (r *UserRepository) ListSettings(ctx context.Context, userID int64) ([]domain.Setting, error) {
+	// TODO: Implement in Task 5
+	return nil, nil
+}
