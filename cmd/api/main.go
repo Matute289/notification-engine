@@ -122,6 +122,8 @@ func run() error {
 	updateSetting := &service.UpdateSetting{Users: usersRepo, Clock: clock}
 	registerDevice := &service.RegisterDevice{Users: usersRepo, Clock: clock}
 	deleteDevice := &service.DeleteDevice{Users: usersRepo}
+	listNotifications := &service.ListNotifications{Notifications: notificationsRepo}
+	listSettings := &service.ListSettings{Users: usersRepo}
 
 	// --- auth ---
 	clerkVerifier, err := auth.NewClerkVerifier(ctx, cfg.ClerkIssuer, cfg.ClerkAuthorizedParties)
@@ -149,6 +151,8 @@ func run() error {
 		UpdateSettingSvc:  updateSetting,
 		RegisterDeviceSvc: registerDevice,
 		DeleteDeviceSvc:   deleteDevice,
+		ListNotificationsSvc: listNotifications,
+		ListSettingsSvc:      listSettings,
 	}
 
 	srv := &http.Server{
