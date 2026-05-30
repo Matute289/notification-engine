@@ -23,7 +23,8 @@ type Handler struct {
 	ListTemplatesSvc   *service.ListTemplates
 	UpdateSettingSvc   *service.UpdateSetting
 	RegisterDeviceSvc  *service.RegisterDevice
-	DeleteDeviceSvc    *service.DeleteDevice
+	DeleteDeviceSvc      *service.DeleteDevice
+	ListNotificationsSvc *service.ListNotifications
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
