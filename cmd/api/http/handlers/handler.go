@@ -25,6 +25,7 @@ type Handler struct {
 	RegisterDeviceSvc  *service.RegisterDevice
 	DeleteDeviceSvc      *service.DeleteDevice
 	ListNotificationsSvc *service.ListNotifications
+	ListSettingsSvc      *service.ListSettings
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
