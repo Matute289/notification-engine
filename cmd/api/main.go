@@ -78,7 +78,7 @@ func run() error {
 
 	notificationsRepo := postgres.NewNotificationRepository(pool)
 	usersRepo := postgres.NewUserRepository(pool)
-	mongoTemplatesRepo, err := mongoinfra.NewTemplateRepository(mongoDB)
+	mongoTemplatesRepo, err := mongoinfra.NewTemplateRepository(ctx, mongoDB)
 	if err != nil {
 		return fmt.Errorf("mongodb templates: %w", err)
 	}
@@ -179,5 +179,11 @@ func run() error {
 	log.Info("shutting down api")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
-	return srv.Shutdown(shutdownCtx)
+	err = srv.Shutdown(shutdownCtx)
+	// Stop the JWKS refresh goroutine only after the server has drained all
+	// in-flight requests, so JWT verification works throughout the drain window.
+	if clerkVerifier != nil {
+		clerkVerifier.Close()
+	}
+	return err
 }

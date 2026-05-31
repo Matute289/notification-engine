@@ -39,7 +39,7 @@ type TemplateRepository struct {
 
 // NewTemplateRepository creates the repository and ensures a unique index on
 // (owner_user_id, name, channel, locale, version).
-func NewTemplateRepository(db *mongo.Database) (*TemplateRepository, error) {
+func NewTemplateRepository(ctx context.Context, db *mongo.Database) (*TemplateRepository, error) {
 	col := db.Collection(collectionTemplates)
 	idx := mongo.IndexModel{
 		Keys: bson.D{
@@ -51,7 +51,7 @@ func NewTemplateRepository(db *mongo.Database) (*TemplateRepository, error) {
 		},
 		Options: options.Index().SetUnique(true).SetName("owner_user_id_name_channel_locale_version"),
 	}
-	if _, err := col.Indexes().CreateOne(context.Background(), idx); err != nil {
+	if _, err := col.Indexes().CreateOne(ctx, idx); err != nil {
 		return nil, fmt.Errorf("mongodb: ensure template index: %w", err)
 	}
 	return &TemplateRepository{col: col}, nil

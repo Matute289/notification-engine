@@ -54,8 +54,10 @@ func (u *ProcessNotification) Execute(ctx context.Context, in ProcessInput) (Pro
 	start := u.Clock.Now()
 	n := in.Notification
 
-	if err := n.MarkInFlight(in.Attempt, start); err == nil {
-		_ = u.Notifications.UpdateStatus(ctx, n.ID, n.Status, n.Attempt, "")
+	if err := n.MarkInFlight(in.Attempt, start); err != nil {
+		u.Log.Warn("mark in_flight transition failed", "err", err, "id", n.ID, "status", n.Status)
+	} else if err := u.Notifications.UpdateStatus(ctx, n.ID, n.Status, n.Attempt, ""); err != nil {
+		u.Log.Error("update status to in_flight failed", "err", err, "id", n.ID)
 	}
 
 	err := u.Provider.Send(ctx, n)
@@ -65,8 +67,12 @@ func (u *ProcessNotification) Execute(ctx context.Context, in ProcessInput) (Pro
 		if err := n.MarkSent(now); err != nil {
 			u.Log.Error("invariant violated marking sent", "err", err, "id", n.ID)
 		}
-		_ = u.Notifications.UpdateStatus(ctx, n.ID, n.Status, n.Attempt, "")
-		_ = u.Notifications.RecordEvent(ctx, n.ID, "sent", nil)
+		if err := u.Notifications.UpdateStatus(ctx, n.ID, n.Status, n.Attempt, ""); err != nil {
+			u.Log.Error("update status to sent failed", "err", err, "id", n.ID)
+		}
+		if err := u.Notifications.RecordEvent(ctx, n.ID, "sent", nil); err != nil {
+			u.Log.Error("record sent event failed", "err", err, "id", n.ID)
+		}
 		u.Metrics.NotificationSent(in.Channel.String())
 		u.observe(in.Channel, OutcomeSent, start)
 		return OutcomeSent, nil
@@ -79,14 +85,20 @@ func (u *ProcessNotification) Execute(ctx context.Context, in ProcessInput) (Pro
 		now := u.Clock.Now()
 		if dead {
 			_ = n.MarkDeadLetter(err.Error(), now)
-			_ = u.Notifications.UpdateStatus(ctx, n.ID, n.Status, n.Attempt, err.Error())
-			_ = u.Notifications.RecordEvent(ctx, n.ID, "dead_letter", map[string]any{"error": err.Error()})
+			if dbErr := u.Notifications.UpdateStatus(ctx, n.ID, n.Status, n.Attempt, err.Error()); dbErr != nil {
+				u.Log.Error("update status to dead_letter failed", "err", dbErr, "id", n.ID)
+			}
+			if dbErr := u.Notifications.RecordEvent(ctx, n.ID, "dead_letter", map[string]any{"error": err.Error()}); dbErr != nil {
+				u.Log.Error("record dead_letter event failed", "err", dbErr, "id", n.ID)
+			}
 			u.Metrics.NotificationDeadLettered(in.Channel.String())
 			u.observe(in.Channel, OutcomeDeadLetter, start)
 			return OutcomeDeadLetter, nil
 		}
 		_ = n.MarkRetrying(err.Error(), now)
-		_ = u.Notifications.UpdateStatus(ctx, n.ID, n.Status, n.Attempt, err.Error())
+		if dbErr := u.Notifications.UpdateStatus(ctx, n.ID, n.Status, n.Attempt, err.Error()); dbErr != nil {
+			u.Log.Error("update status to retrying failed", "err", dbErr, "id", n.ID)
+		}
 		u.Metrics.NotificationFailed(in.Channel.String())
 		u.observe(in.Channel, OutcomeRetry, start)
 		return OutcomeRetry, nil
@@ -95,8 +107,12 @@ func (u *ProcessNotification) Execute(ctx context.Context, in ProcessInput) (Pro
 		// Terminal failure — dead-letter immediately.
 		now := u.Clock.Now()
 		_ = n.MarkDeadLetter(err.Error(), now)
-		_ = u.Notifications.UpdateStatus(ctx, n.ID, n.Status, n.Attempt, err.Error())
-		_ = u.Notifications.RecordEvent(ctx, n.ID, "dead_letter", map[string]any{"error": err.Error()})
+		if dbErr := u.Notifications.UpdateStatus(ctx, n.ID, n.Status, n.Attempt, err.Error()); dbErr != nil {
+			u.Log.Error("update status to dead_letter failed", "err", dbErr, "id", n.ID)
+		}
+		if dbErr := u.Notifications.RecordEvent(ctx, n.ID, "dead_letter", map[string]any{"error": err.Error()}); dbErr != nil {
+			u.Log.Error("record dead_letter event failed", "err", dbErr, "id", n.ID)
+		}
 		u.Metrics.NotificationDeadLettered(in.Channel.String())
 		u.observe(in.Channel, OutcomeDeadLetter, start)
 		// Forward to the terminal queue too — adapter will ack the original.

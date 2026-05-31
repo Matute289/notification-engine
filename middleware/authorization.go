@@ -26,9 +26,11 @@ func RequireUserOwnership(ctx context.Context, pathUserID int64) error {
 		}
 		return nil
 	case "user":
-		// TODO: map Clerk Subject to internal int64 user ID and assert equality
-		// with pathUserID. Until then, any authenticated JWT user is allowed.
-		return nil
+		// JWT user → internal user ID mapping is not yet implemented.
+		// Return ErrForbidden to prevent any JWT-authenticated caller from
+		// accessing another user's resources. Use HMAC with X-On-Behalf-Of-User
+		// header for service-to-service access on behalf of a specific user.
+		return domain.ErrForbidden
 	default:
 		return domain.ErrForbidden
 	}

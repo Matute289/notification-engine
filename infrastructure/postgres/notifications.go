@@ -42,8 +42,14 @@ func (r *NotificationRepository) SubmitWithOutbox(ctx context.Context, n *domain
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	recipientJSON, _ := json.Marshal(n.Recipient) //nolint:errcheck
-	varsJSON, _ := json.Marshal(n.Variables)      //nolint:errcheck
+	recipientJSON, err := json.Marshal(n.Recipient)
+	if err != nil {
+		return fmt.Errorf("marshal recipient: %w", err)
+	}
+	varsJSON, err := json.Marshal(n.Variables)
+	if err != nil {
+		return fmt.Errorf("marshal variables: %w", err)
+	}
 
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO notification_log
@@ -125,9 +131,15 @@ func (o *outboxTx) Commit(ctx context.Context) error  { return o.tx.Commit(ctx) 
 func (o *outboxTx) Rollback(ctx context.Context) error { return o.tx.Rollback(ctx) }
 
 func (r *NotificationRepository) Create(ctx context.Context, n *domain.Notification) error {
-	recipientJSON, _ := json.Marshal(n.Recipient) //nolint:errcheck
-	varsJSON, _ := json.Marshal(n.Variables)      //nolint:errcheck
-	_, err := r.pool.Exec(ctx,
+	recipientJSON, err := json.Marshal(n.Recipient)
+	if err != nil {
+		return fmt.Errorf("marshal recipient: %w", err)
+	}
+	varsJSON, err := json.Marshal(n.Variables)
+	if err != nil {
+		return fmt.Errorf("marshal variables: %w", err)
+	}
+	_, err = r.pool.Exec(ctx,
 		`INSERT INTO notification_log
 		   (id, event_id, channel, recipient, template_id, variables, subject, body, status, attempt)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
@@ -163,8 +175,11 @@ func (r *NotificationRepository) GetByEventID(ctx context.Context, eventID domai
 }
 
 func (r *NotificationRepository) RecordEvent(ctx context.Context, notifID uuid.UUID, eventType string, metadata map[string]any) error {
-	meta, _ := json.Marshal(metadata) //nolint:errcheck
-	_, err := r.pool.Exec(ctx,
+	meta, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("marshal event metadata: %w", err)
+	}
+	_, err = r.pool.Exec(ctx,
 		`INSERT INTO analytics_events (notification_id, event_type, metadata)
 		 VALUES ($1, $2, $3)`, notifID, eventType, meta)
 	if err != nil {

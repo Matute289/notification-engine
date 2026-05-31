@@ -16,6 +16,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// httpRequestDuration tracks HTTP handler latency. Package-level so the
+// metric is registered exactly once regardless of how many times NewRouter
+// is called (e.g. in tests).
+var httpRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	Name:    "http_request_duration_seconds",
+	Help:    "Latency of HTTP requests handled by the API server.",
+	Buckets: prometheus.DefBuckets,
+}, []string{"method", "route", "status"})
+
 // RouterConfig groups optional knobs that the composition root passes in.
 // AppKeyRateLimit and AppKeyRateWindow gate per-app-key global QPS.
 type RouterConfig struct {
@@ -37,15 +46,9 @@ func NewRouter(
 ) http.Handler {
 	r := chi.NewRouter()
 
-	httpHist := promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "http_request_duration_seconds",
-		Help:    "Latency of HTTP requests handled by the API server.",
-		Buckets: prometheus.DefBuckets,
-	}, []string{"method", "route", "status"})
-
 	r.Use(mw.RequestID)
 	r.Use(mw.Recoverer(log))
-	r.Use(mw.AccessLog(log, httpHist))
+	r.Use(mw.AccessLog(log, httpRequestDuration))
 
 	r.Get("/healthz", health)
 	r.Get("/readyz", health)

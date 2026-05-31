@@ -44,6 +44,10 @@ func (h *Handler) ListNotifications(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be a positive integer")
 			return
 		}
+		if v > 100 {
+			writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be between 1 and 100")
+			return
+		}
 		limit = v
 	}
 

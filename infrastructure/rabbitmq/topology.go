@@ -267,8 +267,10 @@ func (c *Conn) ConsumeChannel(prefetch int) (*amqp.Channel, error) {
 // The worker uses it to back off briefly between consume attempts during a
 // broker outage.
 func (c *Conn) AfterReconnect(ctx context.Context, max time.Duration) {
-	t := time.NewTimer(max)
-	defer t.Stop()
+	deadline := time.NewTimer(max)
+	defer deadline.Stop()
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
 	for {
 		if c.IsConnected() {
 			return
@@ -276,9 +278,9 @@ func (c *Conn) AfterReconnect(ctx context.Context, max time.Duration) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-deadline.C:
 			return
-		case <-time.After(200 * time.Millisecond):
+		case <-tick.C:
 		}
 	}
 }

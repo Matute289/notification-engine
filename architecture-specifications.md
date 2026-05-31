@@ -375,10 +375,13 @@ Authorization: Bearer <jwt>
 
 The verifier (`internal/platform/auth/clerk.go::ClerkVerifier`):
 - Fetches the issuer's JWKS at `CLERK_ISSUER + "/.well-known/jwks.json"` once and caches it with auto-refresh via `lestrrat-go/jwx/v2`.
+- The JWKS background-refresh goroutine uses an internal context that is **separate from the startup context**. Call `clerkVerifier.Close()` after `srv.Shutdown()` completes so the goroutine is stopped after all in-flight requests finish, not when the shutdown signal fires.
 - Verifies the JWT's RS256 signature locally.
 - Validates the `iss` (issuer), `sub` (subject, user id), and optionally `azp` (authorized party) claims.
-- If `CLERK_AUTHORIZED_PARTIES` is set, rejects tokens whose `azp` is not in the list.
+- If `CLERK_AUTHORIZED_PARTIES` is set, the `azp` claim **must be present** and must match one of the allowed values. A missing `azp` claim is rejected (not silently passed through).
 - If `CLERK_ISSUER` is empty, JWT verification is disabled.
+
+> **Authorization note:** JWT-authenticated callers (`Kind == "user"`) currently cannot access user-scoped endpoints (`GET /notifications`, `GET /notifications/{id}` for user-owned notifications, `PUT/GET /users/{id}/settings`, `POST/DELETE /users/{id}/devices`). The `RequireUserOwnership` gate returns `ErrForbidden` until a `Subject → int64 user_id` mapping is implemented. Use HMAC with `X-On-Behalf-Of-User` for service-to-user access.
 
 **Works with any OpenID provider:**
 - **Clerk** (example shown; https://clerk.dev)
@@ -415,9 +418,11 @@ If `APP_CLIENTS` is empty, HMAC authentication is disabled.
 #### 8.1.3 Unified dispatch
 
 The middleware `Authenticate(clerk, hmac)` in `middleware/middleware.go`:
+- **First,** applies a 1 MiB body size limit unconditionally (both JWT and HMAC paths).
 - If `Authorization: Bearer` header is present and JWT is configured → verify with ClerkVerifier (or your JWT verifier).
 - Else if HMAC headers are present and HMAC is configured → verify with HMAC verifier.
 - Else → `401 Unauthorized`.
+- `X-Request-ID` headers supplied by clients are validated: max 128 characters, printable ASCII only (no control characters or newlines — prevents log injection). Invalid values are replaced with a server-generated UUID.
 
 Both mechanisms populate an `Identity{Subject, Kind}` context type (user id vs app key). For backward compatibility, `AppKeyFromContext` is still populated from `Identity.Subject`, so existing rate-limit and logging code works unchanged.
 
@@ -430,8 +435,7 @@ Both mechanisms populate an `Identity{Subject, Kind}` context type (user id vs a
 
 ### 8.2 Error envelope
 
-Every error response is `{"code":"...","message":"..."}`. Mapping
-(`cmd/api/http/handles/error.go::mapDomainError`):
+Every error response is `{"code":"...","message":"..."}`. 5xx responses return `"an unexpected error occurred"` as the message (infrastructure details are logged internally, never exposed to clients). Mapping (`cmd/api/http/handlers/error.go::mapDomainError`):
 
 | Sentinel                              | Status |
 | ------------------------------------- | ------ |

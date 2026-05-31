@@ -18,6 +18,7 @@ import (
 	"github.com/example/notification-engine/internal/port"
 	"github.com/example/notification-engine/internal/domain"
 	"github.com/google/uuid"
+	"golang.org/x/sync/singleflight"
 )
 
 // DefaultTTL is the time a compiled template may live in-process before being
@@ -42,6 +43,7 @@ type Renderer struct {
 	cache map[uuid.UUID]cached
 	ttl   time.Duration
 	now   func() time.Time
+	sf    singleflight.Group // collapses concurrent cache misses for the same template
 }
 
 func New(repo port.TemplateRepository) *Renderer {
@@ -83,19 +85,27 @@ func (r *Renderer) lookup(ctx context.Context, id uuid.UUID) (cached, error) {
 	if ok && r.now().Before(t.expiresAt) {
 		return t, nil
 	}
-	dbt, err := r.repo.Get(ctx, id)
+	// singleflight collapses concurrent cache misses for the same id into one
+	// DB fetch, preventing a thundering herd on cache expiry.
+	v, err, _ := r.sf.Do(id.String(), func() (any, error) {
+		dbt, err := r.repo.Get(ctx, id)
+		if err != nil {
+			return cached{}, err
+		}
+		c, err := compile(dbt)
+		if err != nil {
+			return cached{}, err
+		}
+		c.expiresAt = r.now().Add(r.ttl)
+		r.mu.Lock()
+		r.cache[id] = c
+		r.mu.Unlock()
+		return c, nil
+	})
 	if err != nil {
 		return cached{}, err
 	}
-	c, err := compile(dbt)
-	if err != nil {
-		return cached{}, err
-	}
-	c.expiresAt = r.now().Add(r.ttl)
-	r.mu.Lock()
-	r.cache[id] = c
-	r.mu.Unlock()
-	return c, nil
+	return v.(cached), nil
 }
 
 func compile(t domain.Template) (cached, error) {

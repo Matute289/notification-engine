@@ -1,6 +1,6 @@
 module github.com/example/notification-engine
 
-go 1.26
+go 1.24
 
 require (
 	github.com/alicebob/miniredis/v2 v2.37.0
@@ -45,7 +45,7 @@ require (
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	golang.org/x/crypto v0.33.0 // indirect
-	golang.org/x/sync v0.11.0 // indirect
+	golang.org/x/sync v0.11.0
 	golang.org/x/sys v0.31.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect

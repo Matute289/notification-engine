@@ -35,8 +35,11 @@ func (u *RelayOutbox) Execute(ctx context.Context) (RelayResult, error) {
 	if err != nil {
 		return RelayResult{}, fmt.Errorf("claim outbox: %w", err)
 	}
+	// Rollback is idempotent after Commit; it prevents a connection leak if
+	// we return early (e.g. empty batch or commit failure).
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	if len(items) == 0 {
-		_ = tx.Rollback(ctx)
 		return RelayResult{}, nil
 	}
 	res := RelayResult{Examined: len(items)}
@@ -46,7 +49,7 @@ func (u *RelayOutbox) Execute(ctx context.Context) (RelayResult, error) {
 			u.Log.Warn("outbox publish failed",
 				"id", it.ID, "notification_id", it.NotificationID, "err", err)
 			if mErr := tx.MarkFailed(ctx, it.ID, it.Attempts+1, err.Error()); mErr != nil {
-				u.Log.Error("outbox mark failed: %v", "err", mErr)
+				u.Log.Error("outbox mark failed", "err", mErr)
 			}
 			res.Failed++
 			continue
