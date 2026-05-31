@@ -55,6 +55,227 @@ Just wire the connection strings via environment variables — the code doesn't 
 
 ---
 
+## API Endpoints
+
+### POST /v1/notifications
+
+Submit a notification for delivery to the end user.
+
+**Request:** `Content-Type: application/json`
+```json
+{
+  "event_id": "order-123-email-2025-01-15",
+  "channel": "email",
+  "recipient": {"user_id": 1},
+  "template_id": "550e8400-e29b-41d4-a716-446655440000",
+  "variables": {"Name": "Alice", "Product": "NotifEngine"}
+}
+```
+
+**Response:** `202 Accepted` or `200 OK` (on duplicate)
+```json
+{"notification_id": "5c7c4e2f-1234-1234-1234-1234567890ab", "status": "enqueued", "duplicate": false}
+```
+
+---
+
+### GET /v1/notifications/{id}
+
+Retrieve a notification by id.
+
+**Response:** `200 OK`
+```json
+{
+  "id": "5c7c4e2f-...",
+  "status": "sent",
+  "channel": "email",
+  "created_at": "2025-03-10T10:00:00Z",
+  "updated_at": "2025-03-10T10:02:30Z"
+}
+```
+
+---
+
+### POST /v1/templates
+
+Create a notification template.
+
+**Response:** `201 Created`
+```json
+{
+  "id": "550e8400-...",
+  "name": "welcome",
+  "channel": "email",
+  "subject": "Welcome, {{.Name}}!",
+  "body": "Hello {{.Name}}, thanks for joining."
+}
+```
+
+---
+
+### GET /v1/templates/{id}
+
+Retrieve a template by id.
+
+**Response:** `200 OK`
+```json
+{
+  "id": "550e8400-...",
+  "name": "welcome",
+  "channel": "email",
+  "subject": "Welcome, {{.Name}}!",
+  "body": "Hello {{.Name}}, thanks for joining."
+}
+```
+
+---
+
+### PUT /v1/templates/{id}
+
+Update a template.
+
+**Response:** `200 OK` (same shape as GET)
+
+---
+
+### DELETE /v1/templates/{id}
+
+Delete a template.
+
+**Response:** `204 No Content`
+
+---
+
+### GET /v1/templates
+
+List all templates for the authenticated user, optionally filtered by channel.
+
+**Query parameters:**
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `channel` | string | Optional: filter by `push_ios`, `push_android`, `sms`, `email`, `telegram`, `whatsapp`, `line`, `facebook_messenger` |
+
+**Response:** `200 OK`
+```json
+{
+  "push_ios": [
+    {"id": "550e8400-...", "name": "game_request", "channel": "push_ios", "subject": "", "body": "You have a new request!"}
+  ],
+  "email": [
+    {"id": "550e8400-...", "name": "welcome", "channel": "email", "subject": "Welcome!", "body": "..."}
+  ]
+}
+```
+
+---
+
+### PUT /v1/users/{id}/settings
+
+Update a user's opt-in preference for a channel.
+
+**Request:** `Content-Type: application/json`
+```json
+{
+  "channel": "sms",
+  "opt_in": false
+}
+```
+
+**Response:** `204 No Content`
+
+---
+
+### GET /v1/users/{id}/settings
+
+Retrieve notification preferences for a user across all supported channels.
+
+**Response:** `200 OK`
+```json
+[
+  {"channel": "email",              "opt_in": true,  "updated_at": "2025-03-10T14:05:00Z"},
+  {"channel": "sms",                "opt_in": false, "updated_at": "2025-03-10T14:05:00Z"},
+  {"channel": "push_ios",           "opt_in": true,  "updated_at": null},
+  {"channel": "push_android",       "opt_in": true,  "updated_at": null},
+  {"channel": "telegram",           "opt_in": true,  "updated_at": null},
+  {"channel": "whatsapp",           "opt_in": true,  "updated_at": null},
+  {"channel": "line",               "opt_in": true,  "updated_at": null},
+  {"channel": "facebook_messenger", "opt_in": true,  "updated_at": null}
+]
+```
+
+Always returns all 8 channels. `updated_at: null` means the setting was never explicitly changed (implicit default: opt-in).
+
+---
+
+### POST /v1/users/{id}/devices
+
+Register a push notification device for a user.
+
+**Request:** `Content-Type: application/json`
+```json
+{
+  "channel": "push_ios",
+  "device_token": "abcd1234567890..."
+}
+```
+
+**Response:** `204 No Content`
+
+---
+
+### DELETE /v1/users/{id}/devices
+
+Unregister a push notification device.
+
+**Request:** `Content-Type: application/json`
+```json
+{
+  "channel": "push_ios",
+  "device_token": "abcd1234567890..."
+}
+```
+
+**Response:** `204 No Content`
+
+---
+
+### GET /v1/notifications
+
+List notifications for the authenticated user. Supports cursor-based pagination and optional filters.
+
+**Query parameters:**
+
+| Parameter | Type | Default | Notes |
+|-----------|------|---------|-------|
+| `limit` | int | 20 | 1–100 |
+| `cursor` | string | — | Opaque cursor from previous `next_cursor` |
+| `channel` | string | — | Filter by channel |
+| `status` | string | — | Filter: `received`, `enqueued`, `in_flight`, `sent`, `retrying`, `dead_letter`, `failed` |
+| `since` | RFC3339 | — | Earliest `created_at` to include |
+| `until` | RFC3339 | — | Latest `created_at` to include |
+
+**Response:** `200 OK`
+```json
+{
+  "items": [
+    {
+      "id": "5c7c4e2f-...",
+      "status": "sent",
+      "channel": "email",
+      "created_at": "2025-03-10T10:00:00Z",
+      "updated_at": "2025-03-10T10:02:30Z"
+    }
+  ],
+  "next_cursor": "base64_cursor_or_empty_string",
+  "limit": 20
+}
+```
+
+`next_cursor` is `""` when no further pages exist.
+
+---
+
 ## What it does
 
 - **API** accepts notification requests at `POST /v1/notifications`, authenticated via JWT or HMAC-SHA256.

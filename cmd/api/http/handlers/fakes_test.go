@@ -19,6 +19,9 @@ type notifRepo struct {
 	getErr         error
 	getByEvtResult *domain.Notification
 	getByEvtErr    error
+	listResult     []domain.Notification // for List fake
+	listNextCursor string                // for List fake
+	listErr        error                 // for List fake
 }
 
 func (r *notifRepo) Create(_ context.Context, _ *domain.Notification) error { return r.submitErr }
@@ -37,6 +40,9 @@ func (r *notifRepo) RecordEvent(_ context.Context, _ uuid.UUID, _ string, _ map[
 func (r *notifRepo) ListStuckInFlight(_ context.Context, _ time.Duration, _ int) ([]*domain.Notification, error) {
 	return nil, nil
 }
+func (r *notifRepo) List(_ context.Context, _ port.ListNotificationsParams) ([]domain.Notification, string, error) {
+	return r.listResult, r.listNextCursor, r.listErr
+}
 func (r *notifRepo) SubmitWithOutbox(_ context.Context, _ *domain.Notification, _ []byte) error {
 	return r.submitErr
 }
@@ -48,8 +54,10 @@ var (
 
 // userRepo is a configurable fake for port.UserRepository.
 type userRepo struct {
-	setting domain.Setting
-	err     error
+	setting        domain.Setting  // for GetSetting fake
+	err            error
+	settings       []domain.Setting // for ListSettings fake
+	listSettingsErr error            // for ListSettings fake
 }
 
 func (r *userRepo) GetUser(_ context.Context, _ int64) (domain.User, error) {
@@ -68,6 +76,12 @@ func (r *userRepo) GetSetting(_ context.Context, _ int64, _ domain.Channel) (dom
 func (r *userRepo) UpsertSetting(_ context.Context, _ domain.Setting) error { return r.err }
 func (r *userRepo) DeleteDevice(_ context.Context, _ int64, _ domain.Channel, _ domain.DeviceToken) error {
 	return r.err
+}
+func (r *userRepo) ListSettings(_ context.Context, _ int64) ([]domain.Setting, error) {
+	if r.listSettingsErr != nil {
+		return nil, r.listSettingsErr
+	}
+	return r.settings, nil
 }
 
 var _ port.UserRepository = (*userRepo)(nil)

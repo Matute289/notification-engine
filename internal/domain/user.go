@@ -12,9 +12,15 @@ type User struct {
 }
 
 // FullPhone returns the dialable form (country code + national number).
+// Returns an empty Phone if the concatenated value fails E.164 validation
+// (which causes the downstream channel validation to reject it cleanly).
 func (u User) FullPhone() Phone {
 	if u.PhoneNumber == "" {
 		return ""
 	}
-	return Phone(u.CountryCode + u.PhoneNumber)
+	p, err := ParsePhone(u.CountryCode + u.PhoneNumber)
+	if err != nil {
+		return ""
+	}
+	return p
 }

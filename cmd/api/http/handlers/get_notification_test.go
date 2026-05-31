@@ -36,7 +36,7 @@ func TestGetNotification_NotFound_404(t *testing.T) {
 }
 
 func TestGetNotification_HappyPath_200(t *testing.T) {
-	// Notification with no user_id: ownership check is skipped, no identity needed.
+	// Notification with no user_id is accessible to authenticated service callers.
 	id := uuid.New()
 	n := &domain.Notification{
 		ID:      id,
@@ -48,7 +48,10 @@ func TestGetNotification_HappyPath_200(t *testing.T) {
 		Notifications: &notifRepo{getResult: n},
 	}}
 	w := httptest.NewRecorder()
-	r := withURLParam(httptest.NewRequest(http.MethodGet, "/v1/notifications/"+id.String(), nil), "id", id.String())
+	r := withURLParam(
+		withServiceIdentity(httptest.NewRequest(http.MethodGet, "/v1/notifications/"+id.String(), nil), 0),
+		"id", id.String(),
+	)
 	h.GetNotification(w, r)
 	assert.Equal(t, http.StatusOK, w.Code)
 	var view dto.NotificationView
@@ -56,6 +59,16 @@ func TestGetNotification_HappyPath_200(t *testing.T) {
 	assert.Equal(t, id, view.ID)
 	assert.Equal(t, "evt-1", view.EventID)
 	assert.Equal(t, "sms", view.Channel)
+}
+
+func TestGetNotification_RawRecipient_NoIdentity_401(t *testing.T) {
+	id := uuid.New()
+	n := &domain.Notification{ID: id, Recipient: domain.Recipient{Phone: "+15551234567"}}
+	h := &Handler{GetSvc: &service.GetNotification{Notifications: &notifRepo{getResult: n}}}
+	w := httptest.NewRecorder()
+	r := withURLParam(httptest.NewRequest(http.MethodGet, "/v1/notifications/"+id.String(), nil), "id", id.String())
+	h.GetNotification(w, r)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
 func TestGetNotification_UserRecipient_NoIdentity_401(t *testing.T) {

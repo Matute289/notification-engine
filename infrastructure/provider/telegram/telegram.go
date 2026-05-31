@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -66,7 +67,10 @@ func (p *Provider) Send(ctx context.Context, n *domain.Notification) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", port.ErrTransient, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return nil

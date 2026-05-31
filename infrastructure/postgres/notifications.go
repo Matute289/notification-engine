@@ -2,9 +2,12 @@ package postgres
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/example/notification-engine/internal/port"
@@ -39,8 +42,14 @@ func (r *NotificationRepository) SubmitWithOutbox(ctx context.Context, n *domain
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	recipientJSON, _ := json.Marshal(n.Recipient) //nolint:errcheck
-	varsJSON, _ := json.Marshal(n.Variables)      //nolint:errcheck
+	recipientJSON, err := json.Marshal(n.Recipient)
+	if err != nil {
+		return fmt.Errorf("marshal recipient: %w", err)
+	}
+	varsJSON, err := json.Marshal(n.Variables)
+	if err != nil {
+		return fmt.Errorf("marshal variables: %w", err)
+	}
 
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO notification_log
@@ -122,9 +131,15 @@ func (o *outboxTx) Commit(ctx context.Context) error  { return o.tx.Commit(ctx) 
 func (o *outboxTx) Rollback(ctx context.Context) error { return o.tx.Rollback(ctx) }
 
 func (r *NotificationRepository) Create(ctx context.Context, n *domain.Notification) error {
-	recipientJSON, _ := json.Marshal(n.Recipient) //nolint:errcheck
-	varsJSON, _ := json.Marshal(n.Variables)      //nolint:errcheck
-	_, err := r.pool.Exec(ctx,
+	recipientJSON, err := json.Marshal(n.Recipient)
+	if err != nil {
+		return fmt.Errorf("marshal recipient: %w", err)
+	}
+	varsJSON, err := json.Marshal(n.Variables)
+	if err != nil {
+		return fmt.Errorf("marshal variables: %w", err)
+	}
+	_, err = r.pool.Exec(ctx,
 		`INSERT INTO notification_log
 		   (id, event_id, channel, recipient, template_id, variables, subject, body, status, attempt)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
@@ -160,8 +175,11 @@ func (r *NotificationRepository) GetByEventID(ctx context.Context, eventID domai
 }
 
 func (r *NotificationRepository) RecordEvent(ctx context.Context, notifID uuid.UUID, eventType string, metadata map[string]any) error {
-	meta, _ := json.Marshal(metadata) //nolint:errcheck
-	_, err := r.pool.Exec(ctx,
+	meta, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("marshal event metadata: %w", err)
+	}
+	_, err = r.pool.Exec(ctx,
 		`INSERT INTO analytics_events (notification_id, event_type, metadata)
 		 VALUES ($1, $2, $3)`, notifID, eventType, meta)
 	if err != nil {
@@ -197,6 +215,73 @@ func (r *NotificationRepository) ListStuckInFlight(ctx context.Context, threshol
 	return out, rows.Err()
 }
 
+// List returns a page of notifications belonging to params.UserID, ordered by
+// (created_at DESC, id DESC). It fetches params.Limit+1 rows to detect whether
+// a next page exists, then encodes a cursor from the last item if so.
+func (r *NotificationRepository) List(ctx context.Context, params port.ListNotificationsParams) ([]domain.Notification, string, error) {
+	conds := []string{"(recipient->>'user_id')::bigint = $1"}
+	args := []any{params.UserID}
+
+	if params.Cursor != "" {
+		ts, id, err := decodeCursor(params.Cursor)
+		if err != nil {
+			return nil, "", fmt.Errorf("list notifications: %w", err)
+		}
+		n := len(args)
+		args = append(args, ts, id)
+		conds = append(conds, fmt.Sprintf("(created_at, id) < ($%d, $%d)", n+1, n+2))
+	}
+	if params.Channel != nil {
+		args = append(args, string(*params.Channel))
+		conds = append(conds, fmt.Sprintf("channel = $%d", len(args)))
+	}
+	if params.Status != nil {
+		args = append(args, string(*params.Status))
+		conds = append(conds, fmt.Sprintf("status = $%d", len(args)))
+	}
+	if params.Since != nil {
+		args = append(args, *params.Since)
+		conds = append(conds, fmt.Sprintf("created_at >= $%d", len(args)))
+	}
+	if params.Until != nil {
+		args = append(args, *params.Until)
+		conds = append(conds, fmt.Sprintf("created_at <= $%d", len(args)))
+	}
+
+	q := `SELECT id, event_id, channel, recipient, template_id, variables,
+	             subject, body, status, attempt, last_error, created_at, updated_at
+	        FROM notification_log
+	       WHERE ` + strings.Join(conds, " AND ") + `
+	       ORDER BY created_at DESC, id DESC
+	       LIMIT ` + strconv.Itoa(params.Limit+1)
+
+	rows, err := r.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("list notifications query: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.Notification
+	for rows.Next() {
+		n, err := scanRow(rows)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, *n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", fmt.Errorf("list notifications scan: %w", err)
+	}
+
+	var nextCursor string
+	if len(out) > params.Limit {
+		last := out[params.Limit-1]
+		nextCursor = encodeCursor(last.CreatedAt, last.ID)
+		out = out[:params.Limit]
+	}
+	return out, nextCursor, nil
+}
+
 // scanRow maps the standard 13-column SELECT (above) into a domain.Notification.
 func scanRow(rows pgx.Rows) (*domain.Notification, error) {
 	var (
@@ -209,7 +294,7 @@ func scanRow(rows pgx.Rows) (*domain.Notification, error) {
 	)
 	if err := rows.Scan(&n.ID, &eventID, &channel, &recipientRaw, &n.TemplateID, &varsRaw,
 		&n.Subject, &n.Body, &status, &n.Attempt, &n.LastError, &n.CreatedAt, &n.UpdatedAt); err != nil {
-		return nil, fmt.Errorf("scan stuck row: %w", err)
+		return nil, fmt.Errorf("scan notification row: %w", err)
 	}
 	n.EventID = domain.EventID(eventID)
 	n.Channel = domain.Channel(channel)
@@ -255,4 +340,33 @@ func (r *NotificationRepository) scan(ctx context.Context, query string, arg any
 		}
 	}
 	return &n, nil
+}
+
+// encodeCursor encodes (created_at, id) as a URL-safe base64 string.
+// The format is opaque to API callers.
+func encodeCursor(t time.Time, id uuid.UUID) string {
+	raw := t.Format(time.RFC3339Nano) + "," + id.String()
+	return base64.URLEncoding.EncodeToString([]byte(raw))
+}
+
+// decodeCursor reverses encodeCursor. Returns an error if the cursor is
+// malformed; callers should surface this as a 400 Bad Request.
+func decodeCursor(cursor string) (time.Time, uuid.UUID, error) {
+	b, err := base64.URLEncoding.DecodeString(cursor)
+	if err != nil {
+		return time.Time{}, uuid.UUID{}, fmt.Errorf("invalid cursor encoding: %w", err)
+	}
+	parts := strings.SplitN(string(b), ",", 2)
+	if len(parts) != 2 {
+		return time.Time{}, uuid.UUID{}, fmt.Errorf("invalid cursor format")
+	}
+	t, err := time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return time.Time{}, uuid.UUID{}, fmt.Errorf("invalid cursor timestamp: %w", err)
+	}
+	id, err := uuid.Parse(parts[1])
+	if err != nil {
+		return time.Time{}, uuid.UUID{}, fmt.Errorf("invalid cursor uuid: %w", err)
+	}
+	return t, id, nil
 }

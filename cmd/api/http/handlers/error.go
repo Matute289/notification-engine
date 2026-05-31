@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/example/notification-engine/cmd/api/http/dto"
@@ -9,7 +10,9 @@ import (
 )
 
 // mapDomainError translates sentinel domain errors into HTTP status codes.
-// Non-sentinel errors fall through to 500.
+// Non-sentinel errors fall through to 500 with a generic message; the full
+// error is logged internally so infrastructure details are never exposed to
+// API clients.
 func mapDomainError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
@@ -29,7 +32,8 @@ func mapDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrAlreadyExists):
 		writeError(w, http.StatusConflict, "conflict", err.Error())
 	default:
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		slog.Default().Error("unhandled service error", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "an unexpected error occurred")
 	}
 }
 

@@ -61,11 +61,9 @@ func toWire(n *domain.Notification) publishedNotification {
 	return w
 }
 
-// ensureChannel returns the publisher's confirm-mode channel, opening it if
-// missing or replacing it if the previous one is closed (e.g. after reconnect).
-func (p *Publisher) ensureChannel() (*amqp.Channel, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// ensureChannelLocked returns the publisher's confirm-mode channel, opening it
+// if missing or replacing it after a reconnect. Must be called with p.mu held.
+func (p *Publisher) ensureChannelLocked() (*amqp.Channel, error) {
 	if p.ch != nil && !p.ch.IsClosed() {
 		return p.ch, nil
 	}
@@ -115,8 +113,15 @@ func (p *Publisher) Retry(ctx context.Context, channel domain.Channel, body []by
 
 // publishRaw publishes one message and waits for the broker's confirm. exchange
 // may be empty (default exchange) for direct-to-queue publishes used by Retry.
+//
+// The mutex is held for the entire publish+confirm cycle to prevent concurrent
+// goroutines from interleaving writes on the same AMQP channel, which would
+// corrupt the protocol framing. This makes publishes sequential, which is safe
+// because we wait for a broker confirm anyway.
 func (p *Publisher) publishRaw(ctx context.Context, routingKey, exchange string, body []byte, attempt int, expiration, messageID string) error {
-	ch, err := p.ensureChannel()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ch, err := p.ensureChannelLocked()
 	if err != nil {
 		return err
 	}

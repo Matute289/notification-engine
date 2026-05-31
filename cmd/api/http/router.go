@@ -16,6 +16,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// httpRequestDuration tracks HTTP handler latency. Package-level so the
+// metric is registered exactly once regardless of how many times NewRouter
+// is called (e.g. in tests).
+var httpRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	Name:    "http_request_duration_seconds",
+	Help:    "Latency of HTTP requests handled by the API server.",
+	Buckets: prometheus.DefBuckets,
+}, []string{"method", "route", "status"})
+
 // RouterConfig groups optional knobs that the composition root passes in.
 // AppKeyRateLimit and AppKeyRateWindow gate per-app-key global QPS.
 type RouterConfig struct {
@@ -37,15 +46,9 @@ func NewRouter(
 ) http.Handler {
 	r := chi.NewRouter()
 
-	httpHist := promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "http_request_duration_seconds",
-		Help:    "Latency of HTTP requests handled by the API server.",
-		Buckets: prometheus.DefBuckets,
-	}, []string{"method", "route", "status"})
-
 	r.Use(mw.RequestID)
 	r.Use(mw.Recoverer(log))
-	r.Use(mw.AccessLog(log, httpHist))
+	r.Use(mw.AccessLog(log, httpRequestDuration))
 
 	r.Get("/healthz", health)
 	r.Get("/readyz", health)
@@ -57,12 +60,14 @@ func NewRouter(
 		r.Route("/v1", func(r chi.Router) {
 			r.Post("/notifications", h.SubmitNotification)
 			r.Get("/notifications/{id}", h.GetNotification)
+			r.Get("/notifications", h.ListNotifications)
 			r.Post("/templates", h.CreateTemplate)
 			r.Get("/templates/{id}", h.GetTemplate)
 			r.Put("/templates/{id}", h.UpdateTemplate)
 			r.Delete("/templates/{id}", h.DeleteTemplate)
 			r.Get("/templates", h.ListTemplates)
 			r.Put("/users/{id}/settings", h.UpdateSetting)
+			r.Get("/users/{id}/settings", h.GetSettings)
 			r.Post("/users/{id}/devices", h.RegisterDevice)
 			r.Delete("/users/{id}/devices", h.DeleteDevice)
 		})

@@ -61,16 +61,31 @@ func withIdentity(ctx context.Context, id Identity) context.Context {
 }
 
 // RequestID assigns a UUID to every request and stamps it on the response.
+// Client-supplied X-Request-ID values are accepted only when they are
+// non-empty, at most 128 characters, and contain only URL-safe characters
+// to prevent log-injection attacks.
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
-		if id == "" {
+		if id == "" || len(id) > 128 || !isValidRequestID(id) {
 			id = uuid.New().String()
 		}
 		w.Header().Set("X-Request-ID", id)
 		ctx := context.WithValue(r.Context(), ctxRequestID, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// isValidRequestID returns true when s contains only printable ASCII characters
+// that cannot be used to forge structured log entries (no control characters,
+// newlines, or null bytes).
+func isValidRequestID(s string) bool {
+	for _, c := range s {
+		if c < 0x20 || c > 0x7E {
+			return false
+		}
+	}
+	return true
 }
 
 func RequestIDFromContext(ctx context.Context) string {
@@ -139,6 +154,10 @@ func AccessLog(log *slog.Logger, httpHist *prometheus.HistogramVec) func(http.Ha
 func Authenticate(clerk *auth.ClerkVerifier, hmacVer *auth.Verifier) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Enforce body size limit unconditionally so JWT-authenticated paths
+			// are also protected against arbitrarily large request bodies.
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
 			// Clerk Bearer path — no body needed.
 			if clerk != nil {
 				if bearer := extractBearer(r); bearer != "" {
@@ -155,7 +174,7 @@ func Authenticate(clerk *auth.ClerkVerifier, hmacVer *auth.Verifier) func(http.H
 
 			// HMAC path — reads and replaces body so downstream handlers see it.
 			if hmacVer != nil {
-				body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+				body, err := io.ReadAll(r.Body)
 				if err != nil {
 					writeErr(w, http.StatusBadRequest, "invalid_body")
 					return
@@ -222,7 +241,9 @@ func AppKeyRateLimit(rl port.RateLimiter, limit int, window time.Duration) func(
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := AppKeyFromContext(r.Context())
 			if key == "" {
-				next.ServeHTTP(w, r)
+				// Identity must always be present at this point; a missing key
+				// means Authenticate did not run or was bypassed — treat as 401.
+				writeErr(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 			ok, err := rl.Allow(r.Context(), fmt.Sprintf("notif:rl:appkey:%s", key), limit, window)

@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/example/notification-engine/cmd/api/http/dto"
+	"github.com/example/notification-engine/internal/domain"
 	mw "github.com/example/notification-engine/middleware"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -24,6 +25,18 @@ func (h *Handler) GetNotification(w http.ResponseWriter, r *http.Request) {
 	if n.Recipient.UserID != nil {
 		if err := mw.RequireUserOwnership(r.Context(), *n.Recipient.UserID); err != nil {
 			mapDomainError(w, err)
+			return
+		}
+	} else {
+		// Notifications addressed to a raw email/phone/token (no UserID) are
+		// accessible only to authenticated service callers — not JWT users.
+		id, ok := mw.IdentityFromContext(r.Context())
+		if !ok {
+			mapDomainError(w, domain.ErrUnauthenticated)
+			return
+		}
+		if id.Kind != "service" {
+			mapDomainError(w, domain.ErrForbidden)
 			return
 		}
 	}

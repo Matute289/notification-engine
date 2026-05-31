@@ -118,3 +118,31 @@ func (r *UserRepository) DeleteDevice(ctx context.Context, userID int64, channel
 	}
 	return nil
 }
+
+// ListSettings returns every explicit notification_settings row for userID.
+// Channels with no row are omitted here; the service layer fills in defaults.
+func (r *UserRepository) ListSettings(ctx context.Context, userID int64) ([]domain.Setting, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT user_id, channel, opt_in, updated_at
+		   FROM notification_settings
+		  WHERE user_id = $1
+		  ORDER BY channel`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list settings query: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.Setting
+	for rows.Next() {
+		var (
+			s  domain.Setting
+			ch string
+		)
+		if err := rows.Scan(&s.UserID, &ch, &s.OptIn, &s.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("list settings scan: %w", err)
+		}
+		s.Channel = domain.Channel(ch)
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
