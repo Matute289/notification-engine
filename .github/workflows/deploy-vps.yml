@@ -38,7 +38,7 @@ jobs:
         run: |
           docker save notif-api:latest notif-worker:latest \
             notif-janitor:latest notif-outbox-relay:latest \
-            notif-migrate:latest | gzip > /tmp/notif-images.tar.gz
+            notif-migrate:latest | gzip > notif-images.tar.gz
 
       - name: Copy images to VPS
         uses: appleboy/scp-action@v0.1.7
@@ -46,7 +46,7 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: mgrinberg
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: /tmp/notif-images.tar.gz
+          source: notif-images.tar.gz
           target: /tmp/
 
       - name: Load images and restart on VPS
@@ -59,7 +59,7 @@ jobs:
             docker load < /tmp/notif-images.tar.gz
             rm /tmp/notif-images.tar.gz
             cd /opt/notification-engine
-            docker compose -f docker-compose.vps.yml up -d --force-recreate \
+            docker compose -f docker-compose.vps.yml --env-file .env.vps up -d --force-recreate \
               api worker-email worker-sms worker-telegram worker-whatsapp worker-line \
               janitor outbox-relay
-            docker compose -f docker-compose.vps.yml ps
+            docker compose -f docker-compose.vps.yml --env-file .env.vps ps
