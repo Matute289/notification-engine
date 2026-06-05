@@ -1,0 +1,237 @@
+# docker-compose.vps.yml — Production VPS deployment
+# Location on VPS: /opt/notification-engine/docker-compose.vps.yml
+# Usage: docker compose -f docker-compose.vps.yml up -d
+#
+# Workers included: email, sms, telegram, whatsapp, line
+# Workers excluded: push_ios, push_android, facebook_messenger (not needed)
+# Monitoring: Prometheus excluded (use vps-health agent instead)
+#
+# All services run in PROVIDER_MODE=mock until credentials are configured.
+# See: docs/plans/notification-engine-credentials.md
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: notif-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-notif}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+      POSTGRES_DB: ${POSTGRES_DB:-notif}
+    volumes:
+      - /opt/notification-engine/data/postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-notif} -d ${POSTGRES_DB:-notif}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 256m
+
+  redis:
+    image: redis:7-alpine
+    container_name: notif-redis
+    command: redis-server --maxmemory 100mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 128m
+
+  mongodb:
+    image: mongo:7
+    container_name: notif-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-notif}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?MONGO_PASSWORD required}
+    volumes:
+      - /opt/notification-engine/data/mongodb:/data/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    mem_limit: 512m
+
+  rabbitmq:
+    image: rabbitmq:3-alpine
+    container_name: notif-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-notif}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD required}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    mem_limit: 256m
+
+  # ── One-time jobs ────────────────────────────────────────────────────────
+
+  migrate:
+    image: notif-migrate:latest
+    container_name: notif-migrate
+    environment:
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-notif}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-notif}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  seed-mongo:
+    image: mongo:7
+    container_name: notif-seed-mongo
+    environment:
+      MONGO_USER: ${MONGO_USER:-notif}
+      MONGO_PASSWORD: ${MONGO_PASSWORD}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: "no"
+    command: >
+      mongosh "mongodb://${MONGO_USER:-notif}:${MONGO_PASSWORD}@mongodb:27017/notification_engine?authSource=admin" --eval
+      "db.notification_templates.insertMany([
+        {_id:'11111111-1111-1111-1111-111111111111',name:'welcome',channel:'email',locale:'en',subject:'Welcome, {{.Name}}!',body:'Hi {{.Name}}, thanks for joining {{.Product}}.',media_urls:[],version:1,owner_user_id:1,created_at:new Date(),updated_at:new Date()},
+        {_id:'22222222-2222-2222-2222-222222222222',name:'order_shipped',channel:'sms',locale:'en',subject:'',body:'Your order #{{.OrderID}} has shipped.',media_urls:[],version:1,owner_user_id:1,created_at:new Date(),updated_at:new Date()},
+        {_id:'33333333-3333-3333-3333-333333333333',name:'game_request',channel:'push_ios',locale:'en',subject:'Game Request',body:'{{.From}} wants to play chess',media_urls:[],version:1,owner_user_id:1,created_at:new Date(),updated_at:new Date()}
+      ], {ordered:false})"
+
+  # ── Application services ─────────────────────────────────────────────────
+
+  api:
+    image: notif-api:latest
+    container_name: notif-api
+    env_file: /opt/notification-engine/.env.vps
+    environment:
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-notif}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-notif}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-notif}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      MONGODB_URI: mongodb://${MONGO_USER:-notif}:${MONGO_PASSWORD}@mongodb:27017
+    ports:
+      - "127.0.0.1:8001:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      seed-mongo:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 128m
+
+  worker-email:
+    image: notif-worker:latest
+    container_name: notif-worker-email
+    env_file: /opt/notification-engine/.env.vps
+    environment:
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-notif}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-notif}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-notif}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      WORKER_CHANNEL: email
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 64m
+
+  worker-sms:
+    image: notif-worker:latest
+    container_name: notif-worker-sms
+    env_file: /opt/notification-engine/.env.vps
+    environment:
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-notif}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-notif}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-notif}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      WORKER_CHANNEL: sms
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 64m
+
+  worker-telegram:
+    image: notif-worker:latest
+    container_name: notif-worker-telegram
+    env_file: /opt/notification-engine/.env.vps
+    environment:
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-notif}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-notif}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-notif}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      WORKER_CHANNEL: telegram
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 64m
+
+  worker-whatsapp:
+    image: notif-worker:latest
+    container_name: notif-worker-whatsapp
+    env_file: /opt/notification-engine/.env.vps
+    environment:
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-notif}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-notif}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-notif}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      WORKER_CHANNEL: whatsapp
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 64m
+
+  worker-line:
+    image: notif-worker:latest
+    container_name: notif-worker-line
+    env_file: /opt/notification-engine/.env.vps
+    environment:
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-notif}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-notif}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-notif}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      WORKER_CHANNEL: line
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 64m
+
+  janitor:
+    image: notif-janitor:latest
+    container_name: notif-janitor
+    env_file: /opt/notification-engine/.env.vps
+    environment:
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-notif}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-notif}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-notif}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      JANITOR_INTERVAL: 30s
+      JANITOR_STUCK_THRESHOLD: 5m
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 64m
+
+  outbox-relay:
+    image: notif-outbox-relay:latest
+    container_name: notif-outbox-relay
+    env_file: /opt/notification-engine/.env.vps
+    environment:
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-notif}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-notif}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-notif}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      RELAY_INTERVAL: 500ms
+      RELAY_BATCH_SIZE: 100
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 64m

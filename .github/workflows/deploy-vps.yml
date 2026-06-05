@@ -1,0 +1,65 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [vps-deploy]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    name: Build images and deploy to VPS
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build all images
+        run: |
+          docker buildx build --load \
+            -f deploy/docker/Dockerfile.api \
+            -t notif-api:latest .
+          docker buildx build --load \
+            -f deploy/docker/Dockerfile.worker \
+            -t notif-worker:latest .
+          docker buildx build --load \
+            -f deploy/docker/Dockerfile.janitor \
+            -t notif-janitor:latest .
+          docker buildx build --load \
+            -f deploy/docker/Dockerfile.outbox-relay \
+            -t notif-outbox-relay:latest .
+          docker buildx build --load \
+            -f deploy/docker/Dockerfile.migrate \
+            -t notif-migrate:latest .
+
+      - name: Save images as tarballs
+        run: |
+          docker save notif-api:latest notif-worker:latest \
+            notif-janitor:latest notif-outbox-relay:latest \
+            notif-migrate:latest | gzip > /tmp/notif-images.tar.gz
+
+      - name: Copy images to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: mgrinberg
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: /tmp/notif-images.tar.gz
+          target: /tmp/
+
+      - name: Load images and restart on VPS
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: mgrinberg
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            docker load < /tmp/notif-images.tar.gz
+            rm /tmp/notif-images.tar.gz
+            cd /opt/notification-engine
+            docker compose -f docker-compose.vps.yml up -d --force-recreate \
+              api worker-email worker-sms worker-telegram worker-whatsapp worker-line \
+              janitor outbox-relay
+            docker compose -f docker-compose.vps.yml ps
