@@ -1,13 +1,10 @@
 # docker-compose.vps.yml — Production VPS deployment
 # Location on VPS: /opt/notification-engine/docker-compose.vps.yml
-# Usage: docker compose -f docker-compose.vps.yml up -d
+# Usage: docker compose -f docker-compose.vps.yml --env-file .env.vps up -d
 #
-# Workers included: email, sms, telegram, whatsapp, line
-# Workers excluded: push_ios, push_android, facebook_messenger (not needed)
-# Monitoring: Prometheus excluded (use vps-health agent instead)
-#
-# All services run in PROVIDER_MODE=mock until credentials are configured.
-# See: docs/plans/notification-engine-credentials.md
+# Workers: email, sms, telegram, whatsapp, line (no push_ios/android/facebook)
+# Memory limits tuned for 1-3 users (non-Veloren services)
+# PROVIDER_MODE=mock until credentials configured (see docs/plans/notification-engine-credentials.md)
 
 services:
 
@@ -28,19 +25,19 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-    mem_limit: 256m
+    mem_limit: 128m
 
   redis:
     image: redis:7-alpine
     container_name: notif-redis
-    command: redis-server --maxmemory 100mb --maxmemory-policy allkeys-lru
+    command: redis-server --maxmemory 48mb --maxmemory-policy allkeys-lru
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 20
-    mem_limit: 128m
+    mem_limit: 64m
 
   mongodb:
     image: mongo:7
@@ -56,7 +53,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
-    mem_limit: 512m
+    mem_limit: 256m
 
   rabbitmq:
     image: rabbitmq:3-alpine
@@ -70,7 +67,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
-    mem_limit: 256m
+    mem_limit: 128m
 
   # ── One-time jobs ────────────────────────────────────────────────────────
 
@@ -84,9 +81,25 @@ services:
         condition: service_healthy
     restart: "no"
 
-  # seed-mongo removed from compose — run manually with:
-  # ./deploy/scripts/seed-mongo.sh
-  # (only needed once, inserts example notification templates)
+  seed-mongo:
+    image: mongo:7
+    container_name: notif-seed-mongo
+    environment:
+      MONGO_USER: ${MONGO_USER:-notif}
+      MONGO_PASSWORD: ${MONGO_PASSWORD}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: "no"
+    command: >
+      mongosh "mongodb://${MONGO_USER:-notif}:${MONGO_PASSWORD}@mongodb:27017/notification_engine?authSource=admin" --eval
+      "db.notification_templates.insertMany([
+          {_id: '11111111-1111-1111-1111-111111111111', name: 'welcome', channel: 'email', locale: 'en', subject: 'Welcome, {{.Name}}!', body: 'Hi {{.Name}}, thanks for joining {{.Product}}.', media_urls: [], version: 1, owner_user_id: 1, created_at: new Date(), updated_at: new Date()},
+          {_id: '22222222-2222-2222-2222-222222222222', name: 'order_shipped', channel: 'sms', locale: 'en', subject: '', body: 'Your order #{{.OrderID}} has shipped.', media_urls: [], version: 1, owner_user_id: 1, created_at: new Date(), updated_at: new Date()},
+          {_id: '33333333-3333-3333-3333-333333333333', name: 'game_request', channel: 'push_ios', locale: 'en', subject: 'Game Request', body: '{{.From}} wants to play chess', media_urls: [], version: 1, owner_user_id: 1, created_at: new Date(), updated_at: new Date()}
+        ],
+        {ordered: false}
+      )"
 
   # ── Application services ─────────────────────────────────────────────────
 
@@ -111,7 +124,7 @@ services:
       mongodb:
         condition: service_healthy
     restart: unless-stopped
-    mem_limit: 128m
+    mem_limit: 64m
 
   worker-email:
     image: notif-worker:latest
@@ -122,11 +135,12 @@ services:
       REDIS_ADDR: redis:6379
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-notif}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       WORKER_CHANNEL: email
+      WORKER_CONCURRENCY: "2"
     depends_on:
       api:
         condition: service_started
     restart: unless-stopped
-    mem_limit: 64m
+    mem_limit: 32m
 
   worker-sms:
     image: notif-worker:latest
@@ -137,11 +151,12 @@ services:
       REDIS_ADDR: redis:6379
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-notif}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       WORKER_CHANNEL: sms
+      WORKER_CONCURRENCY: "2"
     depends_on:
       api:
         condition: service_started
     restart: unless-stopped
-    mem_limit: 64m
+    mem_limit: 32m
 
   worker-telegram:
     image: notif-worker:latest
@@ -152,11 +167,12 @@ services:
       REDIS_ADDR: redis:6379
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-notif}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       WORKER_CHANNEL: telegram
+      WORKER_CONCURRENCY: "2"
     depends_on:
       api:
         condition: service_started
     restart: unless-stopped
-    mem_limit: 64m
+    mem_limit: 32m
 
   worker-whatsapp:
     image: notif-worker:latest
@@ -167,11 +183,12 @@ services:
       REDIS_ADDR: redis:6379
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-notif}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       WORKER_CHANNEL: whatsapp
+      WORKER_CONCURRENCY: "2"
     depends_on:
       api:
         condition: service_started
     restart: unless-stopped
-    mem_limit: 64m
+    mem_limit: 32m
 
   worker-line:
     image: notif-worker:latest
@@ -182,11 +199,12 @@ services:
       REDIS_ADDR: redis:6379
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-notif}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       WORKER_CHANNEL: line
+      WORKER_CONCURRENCY: "2"
     depends_on:
       api:
         condition: service_started
     restart: unless-stopped
-    mem_limit: 64m
+    mem_limit: 32m
 
   janitor:
     image: notif-janitor:latest
@@ -202,7 +220,7 @@ services:
       api:
         condition: service_started
     restart: unless-stopped
-    mem_limit: 64m
+    mem_limit: 32m
 
   outbox-relay:
     image: notif-outbox-relay:latest
@@ -218,4 +236,4 @@ services:
       api:
         condition: service_started
     restart: unless-stopped
-    mem_limit: 64m
+    mem_limit: 32m
