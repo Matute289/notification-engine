@@ -49,7 +49,7 @@ jobs:
           source: notif-images.tar.gz
           target: /tmp/
 
-      - name: Load images and restart on VPS
+      - name: Load images on VPS (service is paused, no auto-start)
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -58,8 +58,3 @@ jobs:
           script: |
             docker load < /tmp/notif-images.tar.gz
             rm /tmp/notif-images.tar.gz
-            cd /opt/notification-engine
-            docker compose -f docker-compose.vps.yml --env-file .env.vps up -d --force-recreate \
-              api worker-email worker-sms worker-telegram worker-whatsapp worker-line \
-              janitor outbox-relay
-            docker compose -f docker-compose.vps.yml --env-file .env.vps ps
